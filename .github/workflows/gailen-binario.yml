@@ -22,6 +22,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Liberar disco
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup && df -h /
+      # El perfil release es lto=fat con codegen-units=1: en el enlace final rustc supera la memoria del runner y muere por SIGKILL.
+      - name: Swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 28G /gailen-swap
+          sudo chmod 600 /gailen-swap && sudo mkswap /gailen-swap >/dev/null && sudo swapon /gailen-swap
+          free -h && df -h /
       - name: Dashboard
         run: |
           docker run --rm -v "$PWD/crates/librefang-api":/api -w /api/dashboard node:22.23.3-alpine sh -c \
