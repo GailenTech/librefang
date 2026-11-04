@@ -82,6 +82,7 @@ fn entry_stdio_that_fails(name: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 
@@ -100,6 +101,7 @@ fn entry_http_that_fails(name: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 
@@ -123,6 +125,7 @@ fn entry_http_with_userinfo(name: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 
@@ -154,6 +157,7 @@ fn entry_http_needing_oauth(name: &str, url: &str) -> McpServerConfigEntry {
         }),
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 
@@ -169,6 +173,7 @@ fn entry_without_transport(name: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 

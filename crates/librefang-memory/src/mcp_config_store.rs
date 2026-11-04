@@ -169,6 +169,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         }
     }
 

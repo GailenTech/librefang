@@ -264,7 +264,7 @@ async fn transport_failure_is_reported_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::Wedge);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -292,7 +292,7 @@ async fn application_error_is_not_reported_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::JsonRpcError);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -318,7 +318,7 @@ async fn successful_call_is_reported_as_ok_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::Success);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -336,7 +336,7 @@ async fn a_connection_without_a_reporter_still_dispatches() {
         conn.health_reporter().is_none(),
         "connect must not invent a reporter"
     );
-    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -363,8 +363,8 @@ async fn a_slow_call_does_not_block_other_servers_or_the_list() {
     let slow = connect_stub_named("slow", slow_url, None).await;
     let quick = connect_stub_named("quick", quick_url, None).await;
     let conns: McpConnectionList = tokio::sync::Mutex::new(vec![
-        McpConnectionEntry::new(slow),
-        McpConnectionEntry::new(quick),
+        McpConnectionEntry::new(slow, 1),
+        McpConnectionEntry::new(quick, 1),
     ]);
 
     let slow_call = async {
@@ -411,7 +411,7 @@ async fn a_slow_call_does_not_block_other_servers_or_the_list() {
 async fn calls_to_the_same_server_are_still_serialized() {
     let (url, _s) = spawn_stub(CallBehaviour::SlowSuccess(600));
     let conn = connect_stub_named("one", url, None).await;
-    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
 
     let t = std::time::Instant::now();
     let (a, b) = tokio::join!(
@@ -426,6 +426,50 @@ async fn calls_to_the_same_server_are_still_serialized() {
     );
 }
 
+/// With `max_concurrent_calls = 2`, two calls to the same server overlap, and a third waits for a free slot.
+/// (The hand-rolled SSE transport the stub speaks sends one independent POST per call, so overlap here is real overlap on the wire.)
+#[tokio::test]
+async fn max_concurrent_calls_lets_calls_to_one_server_overlap_up_to_the_limit() {
+    let (url, _s) = spawn_stub(CallBehaviour::SlowSuccess(600));
+    let conn = connect_stub_named("one", url, None).await;
+    let entry = McpConnectionEntry::new(conn, 2);
+    assert_eq!(entry.max_concurrent_calls(), 2);
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![entry]);
+
+    let t = std::time::Instant::now();
+    let (a, b) = tokio::join!(
+        call(&conns, "t1", "mcp_one_slowop"),
+        call(&conns, "t2", "mcp_one_slowop"),
+    );
+    let two = t.elapsed();
+    assert!(!a.is_error && !b.is_error, "{} / {}", a.content, b.content);
+    assert!(
+        two < std::time::Duration::from_millis(1000),
+        "two calls under a limit of 2 did not overlap: {two:?}"
+    );
+
+    let t = std::time::Instant::now();
+    let (a, b, c) = tokio::join!(
+        call(&conns, "t1", "mcp_one_slowop"),
+        call(&conns, "t2", "mcp_one_slowop"),
+        call(&conns, "t3", "mcp_one_slowop"),
+    );
+    let three = t.elapsed();
+    assert!(!a.is_error && !b.is_error && !c.is_error);
+    assert!(
+        three >= std::time::Duration::from_millis(1100),
+        "the third call did not wait for a free slot: {three:?}"
+    );
+}
+
+/// A limit of 0 is a configuration slip, not a way to disable the server: it behaves as 1.
+#[tokio::test]
+async fn a_limit_of_zero_behaves_as_one() {
+    let (url, _s) = spawn_stub(CallBehaviour::Success);
+    let conn = connect_stub_named("one", url, None).await;
+    assert_eq!(McpConnectionEntry::new(conn, 0).max_concurrent_calls(), 1);
+}
+
 // --------------------------------------------------------------------------- Reconnect while a call is in flight ---------------------------------------------------------------------------
 
 /// Reconnect closes the old entry while a call may be running on it.
@@ -435,7 +479,7 @@ async fn closing_waits_for_the_call_in_flight_and_its_outcome_is_not_reported() 
     let (url, _stub) = spawn_stub(CallBehaviour::Wedge);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
     let entry = Arc::clone(&conns.lock().await[0]);
 
     let call = async {
@@ -466,7 +510,7 @@ async fn closing_waits_for_the_call_in_flight_and_its_outcome_is_not_reported() 
         reporter.transport_failures()
     );
     assert!(
-        entry.lock().await.is_none(),
+        entry.acquire().await.is_err(),
         "close() leaves the entry empty"
     );
 }
@@ -476,7 +520,7 @@ async fn closing_waits_for_the_call_in_flight_and_its_outcome_is_not_reported() 
 async fn a_call_queued_behind_close_fails_cleanly() {
     let (url, _stub) = spawn_stub(CallBehaviour::SlowSuccess(800));
     let conn = connect_stub_named("one", url, None).await;
-    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
     let entry = Arc::clone(&conns.lock().await[0]);
 
     let first = call(&conns, "t1", "mcp_one_slowop");

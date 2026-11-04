@@ -119,6 +119,7 @@ fn seed_mcp_server(state: &AppState, server_name: &str) {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     };
     state
         .kernel

@@ -1592,7 +1592,7 @@ async fn dispatch_tool_call(
                 if let Some(mcp_conns) = mcp_connections {
                     let caller_ctx =
                         mcp::CallerContext::from_parts(*sender_id, *channel, *chat_id, *session_id);
-                    // Hold the list lock only long enough to find the entry: the call below holds the lock of that one connection, so a slow server delays calls to itself and nothing else.
+                    // Hold the list lock only long enough to find the entry: the call below takes a slot on that one connection, so a slow server delays calls to itself (up to its `max_concurrent_calls`) and nothing else.
                     let (server_name, entry) = {
                         let conns = mcp_conns.lock().await;
                         let server_name = mcp::resolve_mcp_server_from_known(
@@ -1612,8 +1612,8 @@ async fn dispatch_tool_call(
                                 server = server_name,
                                 "Dispatching to MCP server"
                             );
-                            let mut guard = entry.lock().await;
-                            match guard.as_mut() {
+                            let slot = entry.acquire().await;
+                            match slot.as_ref().ok().and_then(|s| s.connection()) {
                                 None => Err(ToolError::upstream_msg(format!(
                                     "MCP tool call failed: connection to '{server_name}' was closed while the call was waiting"
                                 ))),
@@ -1629,7 +1629,7 @@ async fn dispatch_tool_call(
                                     if !entry.is_retired() {
                                         conn.report_call_outcome(result.as_ref().map(|_| ()));
                                     }
-                                    drop(guard);
+                                    drop(slot);
                                     match result {
                                         Ok(content) => {
                                             // An MCP server answers over stdio or HTTP and the transport does not expose a wire byte count, so the response payload the agent receives is the honest measure of what this call pulled in.

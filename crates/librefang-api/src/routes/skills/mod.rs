@@ -1450,6 +1450,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
 
         upsert_mcp_server_config(&config_path, &entry).expect("upsert should succeed");
@@ -1503,6 +1504,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
 
         upsert_mcp_server_config(&config_path, &entry).expect("upsert should succeed");
@@ -1542,6 +1544,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
         upsert_mcp_server_config(&config_path, &v1).unwrap();
 
@@ -1557,6 +1560,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
         upsert_mcp_server_config(&config_path, &v2).unwrap();
 
@@ -1627,6 +1631,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
 
         upsert_mcp_server_config(&config_path, &entry).expect("upsert should succeed");
@@ -1714,6 +1719,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
 
         let error = upsert_mcp_server_config(&config_path, &entry)
@@ -1756,6 +1762,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
         upsert_mcp_server_config(&config_path, &server_a).unwrap();
 
@@ -1773,6 +1780,7 @@ mod tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
         upsert_mcp_server_config(&config_path, &server_b).unwrap();
 

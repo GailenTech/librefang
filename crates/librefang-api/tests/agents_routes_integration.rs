@@ -2920,6 +2920,7 @@ async fn test_pending_mcp_server_surfaces_until_the_connection_is_live() {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     };
     let h = boot_with_mcp_servers(TEST_TOKEN, vec![server]).await;
 
@@ -3019,6 +3020,7 @@ fn configured_mcp_entry(name: &str) -> librefang_types::config::McpServerConfigE
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 

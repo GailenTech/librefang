@@ -44,6 +44,7 @@ fn boot_with_mcp_server(name: &str, url: &str) -> Harness {
                 oauth: None,
                 taint_scanning: true,
                 taint_policy: None,
+                max_concurrent_calls: 1,
             });
     }));
     let state = test.state.clone();
