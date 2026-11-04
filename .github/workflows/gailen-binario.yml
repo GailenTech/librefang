@@ -1,14 +1,13 @@
-name: Gailen — imagen base linux/arm64
+name: Gailen — binario linux/arm64
 
-# Compila el binario de esta rama dentro de bookworm y publica una imagen base en GHCR.
-# La etiqueta lleva el SHA para no reescribir nunca una imagen ya publicada.
+# Compila el binario de esta rama dentro de bookworm, comprueba que arranca y lo publica como prerelease.
+# La etiqueta lleva el SHA para no reescribir nunca nada ya publicado.
 on:
   push:
     branches: ['gailen/ci-imagen']
 
 permissions:
-  contents: read
-  packages: write
+  contents: write
 
 env:
   IMAGEN: ghcr.io/gailentech/librefang
@@ -42,12 +41,13 @@ jobs:
         run: |
           docker build -t "$IMAGEN:$VERSION-ci-${GITHUB_SHA::9}" deploy/gailen-ci
           docker run --rm "$IMAGEN:$VERSION-ci-${GITHUB_SHA::9}" --version
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publicar
+      # Prerelease con el binario: el motor lo descarga con sha256 fijado, como hace con las releases oficiales.
+      # El paquete de GHCR de este fork es privado y otro repo no podría usarlo como base.
+      - name: Publicar binario
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          docker push "$IMAGEN:$VERSION-ci-${GITHUB_SHA::9}"
-          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGEN:$VERSION-ci-${GITHUB_SHA::9}" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp deploy/gailen-ci/librefang-bin librefang-linux-arm64
+          sha256sum librefang-linux-arm64 | tee -a "$GITHUB_STEP_SUMMARY"
+          gh release create "gailen-mcp1-${GITHUB_SHA::9}" librefang-linux-arm64 --prerelease --target "$GITHUB_SHA" \
+            --title "gailen-mcp1 ${GITHUB_SHA::9}" --notes "Binario linux/arm64 de la rama gailen/ci-imagen. No es una release de LibreFang."
