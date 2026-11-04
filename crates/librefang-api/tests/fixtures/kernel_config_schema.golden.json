@@ -5736,7 +5736,7 @@
       }
     },
     "ParallelToolsConfig": {
-      "description": "Configuration for the agent loop's parallel tool dispatcher.\n\nPR-3 ships the schema only; the agent loop still runs tool calls strictly sequentially. PR-4 wires the dispatcher into the runtime and PR-5 flips `enabled` on by default.\n\n```toml [parallel_tools] enabled = false max_concurrent = 4 mcp_default_safety = \"write_shared\"   # or \"read_only\" mcp_readonly_allowlist = [\"mcp__github__list_issues\"] ```\n\nFalls back to fully sequential execution when `enabled = false`.",
+      "description": "Configuration for the agent loop's parallel tool dispatcher.\n\nPR-3 ships the schema only; the agent loop still runs tool calls strictly sequentially. PR-4 wires the dispatcher into the runtime and PR-5 flips `enabled` on by default.\n\n```toml [parallel_tools] enabled = false max_concurrent = 4 mcp_default_safety = \"write_shared\"   # or \"read_only\" mcp_readonly_allowlist = [\"mcp_github_list_issues\"] ```\n\nFalls back to fully sequential execution when `enabled = false`.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -5757,7 +5757,7 @@
           "type": "string"
         },
         "mcp_readonly_allowlist": {
-          "description": "Explicit allowlist of MCP tool names that should be treated as `ReadOnly` regardless of `mcp_default_safety`. Names match the fully-namespaced form (`mcp__server__name`).",
+          "description": "Explicit allowlist of MCP tool names that should be treated as `ReadOnly` regardless of `mcp_default_safety`. Names match the fully-namespaced form (`mcp_server_name`).",
           "default": [],
           "type": "array",
           "items": {

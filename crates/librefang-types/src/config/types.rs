@@ -8477,7 +8477,7 @@ impl ToolInvokeConfig {
 /// enabled = false
 /// max_concurrent = 4
 /// mcp_default_safety = "write_shared"   # or "read_only"
-/// mcp_readonly_allowlist = ["mcp__github__list_issues"]
+/// mcp_readonly_allowlist = ["mcp_github_list_issues"]
 /// ```
 ///
 /// Falls back to fully sequential execution when `enabled = false`.
@@ -8505,7 +8505,7 @@ pub struct ParallelToolsConfig {
 
     /// Explicit allowlist of MCP tool names that should be treated as
     /// `ReadOnly` regardless of `mcp_default_safety`. Names match the
-    /// fully-namespaced form (`mcp__server__name`).
+    /// fully-namespaced form (`mcp_server_name`).
     pub mcp_readonly_allowlist: Vec<String>,
 }
 

@@ -360,7 +360,7 @@ Controls the agent loop's batch tool dispatcher — when a single assistant turn
 enabled = false
 max_concurrent = 4
 mcp_default_safety = "write_shared"
-mcp_readonly_allowlist = ["mcp__github__list_issues", "mcp__notion__query_database"]
+mcp_readonly_allowlist = ["mcp_github_list_issues", "mcp_notion_query_database"]
 ```
 
 | Field | Type | Default | Description |
@@ -368,7 +368,7 @@ mcp_readonly_allowlist = ["mcp__github__list_issues", "mcp__notion__query_databa
 | `enabled` | bool | `false` | Master switch. When `false`, every tool call in a batch runs strictly sequentially. Turn this on to opt into parallel dispatch. |
 | `max_concurrent` | u32 | `4` | Cap on concurrent tool calls within a single bucket. `0` = uncapped (use the bucket size). |
 | `mcp_default_safety` | string | `"write_shared"` | Default `ParallelSafety` class assigned to MCP tools whose servers don't carry `readOnlyHint` annotations. Accepted values: `"read_only"` or `"write_shared"`. The conservative `"write_shared"` default keeps unannotated MCP tools serialised one-per-bucket rather than optimistically parallelising them. |
-| `mcp_readonly_allowlist` | list of strings | `[]` | Explicit allowlist of MCP tool names to treat as `ReadOnly` regardless of `mcp_default_safety`. Names match the fully-namespaced form `mcp__<server>__<tool>`. |
+| `mcp_readonly_allowlist` | list of strings | `[]` | Explicit allowlist of MCP tool names to treat as `ReadOnly` regardless of `mcp_default_safety`. Names match the fully-namespaced form `mcp_<server>_<tool>`. |
 
 **ParallelSafety classes.** Every tool call is classified into one of four classes (computed from built-in heuristics, the tool's input-schema annotations, or the MCP knobs above):
 
@@ -667,7 +667,7 @@ The agent-loop's parallel tool dispatcher (introduced in the catchup wave). Off 
 | `enabled` | bool | `false` | Master switch. |
 | `max_concurrent` | u32 | `4` | Concurrency cap per bucket (`0` = uncapped). |
 | `mcp_default_safety` | string | `"write_shared"` | Default safety class for unannotated MCP tools — `"read_only"` or `"write_shared"`. |
-| `mcp_readonly_allowlist` | `Vec<string>` | `[]` | Fully-namespaced MCP tool names (`mcp__server__name`) to treat as read-only regardless of `mcp_default_safety`. |
+| `mcp_readonly_allowlist` | `Vec<string>` | `[]` | Fully-namespaced MCP tool names (`mcp_server_name`) to treat as read-only regardless of `mcp_default_safety`. |
 
 `write_shared` keeps unannotated MCP tools strictly serialised, which is the safe default. Only flip individual servers to `read_only` after auditing them.
 
