@@ -11,7 +11,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use librefang_extensions::catalog::McpCatalog;
 use librefang_extensions::health::HealthMonitor;
-use librefang_runtime::mcp::McpConnection;
+use librefang_runtime::mcp::McpConnectionList;
 use librefang_runtime::mcp_oauth::{McpAuthStates, McpOAuthProvider};
 use librefang_types::config::McpServerConfigEntry;
 use librefang_types::tool::ToolDefinition;
@@ -28,7 +28,7 @@ pub trait McpSubsystemApi: Send + Sync {
     /// MCP server health monitor.
     fn health(&self) -> &HealthMonitor;
     /// MCP connection pool.
-    fn connections_ref(&self) -> &tokio::sync::Mutex<Vec<McpConnection>>;
+    fn connections_ref(&self) -> &McpConnectionList;
     /// Per-server OAuth authentication state.
     fn auth_states_ref(&self) -> &McpAuthStates;
     /// Pluggable OAuth provider.
@@ -42,7 +42,7 @@ pub trait McpSubsystemApi: Send + Sync {
 /// MCP cluster — see module docs.
 pub struct McpSubsystem {
     /// MCP server connections (lazily initialized at start_background_agents).
-    pub(crate) mcp_connections: tokio::sync::Mutex<Vec<McpConnection>>,
+    pub(crate) mcp_connections: McpConnectionList,
     /// Serializes connection creation so concurrent reload, retry, and reconnect paths cannot publish duplicate servers.
     pub(crate) mcp_connection_ops: tokio::sync::Mutex<()>,
     /// Per-server MCP OAuth authentication state.
@@ -123,7 +123,7 @@ impl McpSubsystemApi for McpSubsystem {
     }
 
     #[inline]
-    fn connections_ref(&self) -> &tokio::sync::Mutex<Vec<McpConnection>> {
+    fn connections_ref(&self) -> &McpConnectionList {
         &self.mcp_connections
     }
 

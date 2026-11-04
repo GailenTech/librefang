@@ -521,7 +521,7 @@ pub(super) struct ToolExecutionContext<'a> {
     pub(super) caller_id_str: &'a str,
     pub(super) skill_registry: Option<&'a SkillRegistry>,
     pub(super) allowed_skills: &'a [String],
-    pub(super) mcp_connections: Option<&'a tokio::sync::Mutex<Vec<McpConnection>>>,
+    pub(super) mcp_connections: Option<&'a crate::mcp::McpConnectionList>,
     pub(super) web_ctx: Option<&'a WebToolsContext>,
     pub(super) browser_ctx: Option<&'a crate::browser::BrowserManager>,
     pub(super) hand_allowed_env: &'a [String],

@@ -2489,6 +2489,69 @@ impl Drop for McpConnection {
     }
 }
 
+/// One live MCP connection as the kernel's connection list stores it.
+///
+/// The list used to be a single `Mutex<Vec<McpConnection>>` and a tool call held that mutex for its whole network round trip, so every MCP call in the process (any agent, any server) and every reader of the list (`GET /api/mcp/servers`, reconnect) queued behind it.
+/// The list now holds `Arc<McpConnectionEntry>`: the list lock only protects membership and is released as soon as the entry is cloned out, and each connection has its own lock, so a slow call blocks only calls to the same server.
+///
+/// `name` and `tools` are copied out at construction (they never change after `connect`), so readers that only list servers and tools never touch the per-connection lock and are not delayed by a call in flight.
+///
+/// The connection sits in an `Option` so it can be closed in place: [`McpConnectionEntry::close`] waits for the call in flight, takes the connection out and closes it, and any call that was queued behind it finds `None` and fails with a plain error instead of talking to a closed transport.
+pub struct McpConnectionEntry {
+    name: String,
+    tools: Vec<ToolDefinition>,
+    conn: tokio::sync::Mutex<Option<McpConnection>>,
+    /// Set by [`close`](Self::close). A call that finishes after its entry was retired (reconnect, hot-reload, removal) must not report its outcome to the health monitor: health is keyed by server name, and the name now belongs to the replacement connection.
+    retired: std::sync::atomic::AtomicBool,
+}
+
+/// The kernel's list of live connections. See [`McpConnectionEntry`].
+pub type McpConnectionList = tokio::sync::Mutex<Vec<Arc<McpConnectionEntry>>>;
+
+impl McpConnectionEntry {
+    /// Wrap a freshly connected `conn` for storage in an [`McpConnectionList`].
+    pub fn new(conn: McpConnection) -> Arc<Self> {
+        Arc::new(Self {
+            name: conn.name().to_string(),
+            tools: conn.tools().to_vec(),
+            conn: tokio::sync::Mutex::new(Some(conn)),
+            retired: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Server name. Does not take the connection lock.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Tools discovered at connect time. Does not take the connection lock.
+    pub fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
+    }
+
+    /// Lock this connection only. `None` inside the guard means the entry was closed while the caller was queued.
+    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Option<McpConnection>> {
+        self.conn.lock().await
+    }
+
+    /// Whether [`close`](Self::close) has been called on this entry.
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Close the connection in place.
+    ///
+    /// Waits for the call that holds the connection lock (bounded by that call's own timeout), then closes the transport. Calls queued behind it see a closed entry. The entry is marked retired first, so outcomes of calls that were already in flight are not attributed to a replacement connection of the same name.
+    pub async fn close(&self) {
+        self.retired
+            .store(true, std::sync::atomic::Ordering::Release);
+        let taken = self.conn.lock().await.take();
+        if let Some(conn) = taken {
+            conn.close().await;
+        }
+    }
+}
+
 /// Translate MCP `tools/list` annotations into a `metadata.tool_class` field
 /// inside the tool's JSON Schema so `runtime/tool_classifier.rs` can pick it
 /// up via `explicit_class_from_schema`.

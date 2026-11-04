@@ -11,7 +11,6 @@ use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::prelude::*;
 use crate::llm_driver::{CompletionRequest, LlmDriver, StreamEvent, PHASE_RESPONSE_COMPLETE};
 use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
-use crate::mcp::McpConnection;
 use crate::tool_budget::{ToolBudgetEnforcer, ToolResultEntry};
 use crate::tool_runner;
 use crate::web_search::WebToolsContext;
@@ -622,7 +621,7 @@ pub async fn run_agent_loop(
     available_tools: &[ToolDefinition],
     kernel: Option<Arc<dyn KernelHandle>>,
     skill_registry: Option<&SkillRegistry>,
-    mcp_connections: Option<&tokio::sync::Mutex<Vec<McpConnection>>>,
+    mcp_connections: Option<&crate::mcp::McpConnectionList>,
     web_ctx: Option<&WebToolsContext>,
     browser_ctx: Option<&crate::browser::BrowserManager>,
     embedding_driver: Option<&(dyn EmbeddingDriver + Send + Sync)>,
@@ -700,7 +699,7 @@ async fn run_agent_loop_inner(
     available_tools: &[ToolDefinition],
     kernel: Option<Arc<dyn KernelHandle>>,
     skill_registry: Option<&SkillRegistry>,
-    mcp_connections: Option<&tokio::sync::Mutex<Vec<McpConnection>>>,
+    mcp_connections: Option<&crate::mcp::McpConnectionList>,
     web_ctx: Option<&WebToolsContext>,
     browser_ctx: Option<&crate::browser::BrowserManager>,
     embedding_driver: Option<&(dyn EmbeddingDriver + Send + Sync)>,

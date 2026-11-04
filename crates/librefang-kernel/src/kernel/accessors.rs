@@ -305,7 +305,7 @@ impl LibreFangKernel {
     pub(super) async fn build_agent_mcp_pool(
         &self,
         agent_workspace: Option<&std::path::Path>,
-    ) -> Option<tokio::sync::Mutex<Vec<librefang_runtime::mcp::McpConnection>>> {
+    ) -> Option<librefang_runtime::mcp::McpConnectionList> {
         use librefang_runtime::mcp::{McpServerConfig, McpTransport};
         use librefang_types::config::McpTransportEntry;
 
@@ -412,7 +412,7 @@ impl LibreFangKernel {
             // compiles and dispatches fine while silently reporting nothing, which is
             // exactly the invisible hole #7963 was.
             match self.connect_mcp_wired(mcp_config).await {
-                Ok(conn) => connections.push(conn),
+                Ok(conn) => connections.push(librefang_runtime::mcp::McpConnectionEntry::new(conn)),
                 Err(e) => warn!(
                     server = %server_config.name,
                     error = %e,

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::McpSubsystemApi;
+use librefang_runtime::mcp::McpConnectionEntry;
 
 /// Sentinel `McpConnection::connect` returns instead of an error message when the server
 /// answered 401 and supports OAuth: the PKCE flow is UI-driven, so the daemon only records
@@ -297,7 +298,11 @@ impl LibreFangKernel {
                     self.mcp
                         .mcp_health
                         .report_ok(&server_config.name, tool_count);
-                    self.mcp.mcp_connections.lock().await.push(conn);
+                    self.mcp
+                        .mcp_connections
+                        .lock()
+                        .await
+                        .push(McpConnectionEntry::new(conn));
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -342,7 +347,7 @@ impl LibreFangKernel {
     ///
     /// The cache is rebuilt rather than pruned by the `mcp_{server}_` prefix because normalized server names can share a prefix: `github` would otherwise also match every `mcp_github_enterprise_*` tool of a still-connected `github-enterprise`.
     /// Bumps `mcp_generation` when anything was removed.
-    async fn take_mcp_connections(&self, name: &str) -> Vec<librefang_runtime::mcp::McpConnection> {
+    async fn take_mcp_connections(&self, name: &str) -> Vec<Arc<McpConnectionEntry>> {
         let mut conns = self.mcp.mcp_connections.lock().await;
         let mut extracted = Vec::new();
         let mut i = 0;
@@ -496,7 +501,11 @@ impl LibreFangKernel {
                 self.mcp
                     .mcp_health
                     .report_ok(&server_config.name, tool_count);
-                self.mcp.mcp_connections.lock().await.push(conn);
+                self.mcp
+                    .mcp_connections
+                    .lock()
+                    .await
+                    .push(McpConnectionEntry::new(conn));
 
                 // Update auth state to Authorized
                 self.mcp.mcp_auth_states.lock().await.insert(
@@ -685,7 +694,11 @@ impl LibreFangKernel {
                         tools = tool_count,
                         "MCP server connected (hot-reload)"
                     );
-                    self.mcp.mcp_connections.lock().await.push(conn);
+                    self.mcp
+                        .mcp_connections
+                        .lock()
+                        .await
+                        .push(McpConnectionEntry::new(conn));
                     connected_count += 1;
                 }
                 Err(e) => {
@@ -718,7 +731,7 @@ impl LibreFangKernel {
         if !removed.is_empty() {
             // Extract the connections to remove so we can close them explicitly
             // after releasing the lock, preventing subprocess leaks on hot-reload. (#3800)
-            let conns_to_close: Vec<librefang_runtime::mcp::McpConnection> = {
+            let conns_to_close: Vec<Arc<McpConnectionEntry>> = {
                 let mut conns = self.mcp.mcp_connections.lock().await;
                 let mut extracted = Vec::new();
                 let mut i = 0;
@@ -852,7 +865,11 @@ impl LibreFangKernel {
                     tools = tool_count,
                     "MCP server reconnected"
                 );
-                self.mcp.mcp_connections.lock().await.push(conn);
+                self.mcp
+                    .mcp_connections
+                    .lock()
+                    .await
+                    .push(McpConnectionEntry::new(conn));
                 // Cardinality: server label is the operator-configured MCP
                 // server id (bounded set), outcome is one of two fixed
                 // values. (#3495)

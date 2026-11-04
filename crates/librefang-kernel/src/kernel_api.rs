@@ -231,9 +231,7 @@ pub trait KernelApi: KernelHandle + Send + Sync {
         &self,
     ) -> &std::sync::RwLock<Option<librefang_types::config::DefaultModelConfig>>;
     fn mcp_auth_states_ref(&self) -> &librefang_runtime::mcp_oauth::McpAuthStates;
-    fn mcp_connections_ref(
-        &self,
-    ) -> &tokio::sync::Mutex<Vec<librefang_runtime::mcp::McpConnection>>;
+    fn mcp_connections_ref(&self) -> &librefang_runtime::mcp::McpConnectionList;
     fn mcp_tools_ref(&self) -> &std::sync::Mutex<Vec<ToolDefinition>>;
     fn model_catalog_ref(
         &self,
@@ -1131,9 +1129,7 @@ impl KernelApi for LibreFangKernel {
     fn mcp_auth_states_ref(&self) -> &librefang_runtime::mcp_oauth::McpAuthStates {
         <Self as crate::McpSubsystemApi>::auth_states_ref(self)
     }
-    fn mcp_connections_ref(
-        &self,
-    ) -> &tokio::sync::Mutex<Vec<librefang_runtime::mcp::McpConnection>> {
+    fn mcp_connections_ref(&self) -> &librefang_runtime::mcp::McpConnectionList {
         <Self as crate::McpSubsystemApi>::connections_ref(self)
     }
     fn mcp_tools_ref(&self) -> &std::sync::Mutex<Vec<ToolDefinition>> {

@@ -10,8 +10,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use librefang_runtime::mcp::{
-    empty_taint_rule_sets_handle, McpConnection, McpServerConfig, McpTransport,
-    McpTransportHealthReporter,
+    empty_taint_rule_sets_handle, McpConnection, McpConnectionEntry, McpConnectionList,
+    McpServerConfig, McpTransport, McpTransportHealthReporter,
 };
 use librefang_runtime::tool_runner::{execute_tool_raw, ToolExecContext};
 use serde_json::json;
@@ -61,6 +61,8 @@ enum CallBehaviour {
     JsonRpcError,
     /// Answer with a normal successful result.
     Success,
+    /// Answer with a successful result after sleeping this many milliseconds. Each request is served on its own thread, so slow calls do not queue inside the stub.
+    SlowSuccess(u64),
 }
 
 fn json_body(stream: &mut TcpStream, body: &str) {
@@ -143,6 +145,21 @@ fn spawn_stub(behaviour: CallBehaviour) -> (String, std::thread::JoinHandle<()>)
                         })
                         .to_string(),
                     ),
+                    CallBehaviour::SlowSuccess(ms) => {
+                        let mut stream = stream;
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                            json_body(
+                                &mut stream,
+                                &json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": { "content": [{ "type": "text", "text": "done" }] }
+                                })
+                                .to_string(),
+                            );
+                        });
+                    }
                     CallBehaviour::Success => json_body(
                         &mut stream,
                         &json!({
@@ -168,8 +185,16 @@ fn spawn_stub(behaviour: CallBehaviour) -> (String, std::thread::JoinHandle<()>)
 }
 
 async fn connect_stub(url: String, reporter: Option<Arc<RecordingReporter>>) -> McpConnection {
+    connect_stub_named("wedged", url, reporter).await
+}
+
+async fn connect_stub_named(
+    name: &str,
+    url: String,
+    reporter: Option<Arc<RecordingReporter>>,
+) -> McpConnection {
     let conn = McpConnection::connect(McpServerConfig {
-        name: "wedged".to_string(),
+        name: name.to_string(),
         transport: McpTransport::Sse { url },
         // Short so the wedge test does not sit for a minute.
         timeout_secs: 2,
@@ -195,7 +220,7 @@ async fn connect_stub(url: String, reporter: Option<Arc<RecordingReporter>>) -> 
     }
 }
 
-fn ctx<'a>(mcp_connections: &'a tokio::sync::Mutex<Vec<McpConnection>>) -> ToolExecContext<'a> {
+fn ctx<'a>(mcp_connections: &'a McpConnectionList) -> ToolExecContext<'a> {
     ToolExecContext {
         kernel: None,
         allowed_tools: None,
@@ -239,7 +264,7 @@ async fn transport_failure_is_reported_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::Wedge);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![conn]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -267,7 +292,7 @@ async fn application_error_is_not_reported_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::JsonRpcError);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![conn]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -293,7 +318,7 @@ async fn successful_call_is_reported_as_ok_from_the_dispatch_path() {
     let (url, _stub) = spawn_stub(CallBehaviour::Success);
     let reporter = Arc::new(RecordingReporter::default());
     let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
-    let conns = tokio::sync::Mutex::new(vec![conn]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
@@ -311,9 +336,172 @@ async fn a_connection_without_a_reporter_still_dispatches() {
         conn.health_reporter().is_none(),
         "connect must not invent a reporter"
     );
-    let conns = tokio::sync::Mutex::new(vec![conn]);
+    let conns = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
 
     let result = execute_tool_raw("t1", "mcp_wedged_slowop", &json!({}), &ctx(&conns)).await;
 
     assert!(!result.is_error, "call should succeed: {}", result.content);
+}
+
+// --------------------------------------------------------------------------- Per-connection locking ---------------------------------------------------------------------------
+
+/// `execute_tool_raw` with an empty argument object, as an owned future (no temporaries borrowed across `join!`).
+async fn call(
+    conns: &McpConnectionList,
+    id: &str,
+    tool: &str,
+) -> librefang_types::tool::ToolResult {
+    execute_tool_raw(id, tool, &json!({}), &ctx(conns)).await
+}
+
+/// The bug this guards: one process-wide mutex held for the whole `tools/call`, so a slow server delayed calls to every other server and every reader of the connection list.
+/// A slow call on server `slow` must not delay a call on server `quick`, nor `lock()` on the list.
+#[tokio::test]
+async fn a_slow_call_does_not_block_other_servers_or_the_list() {
+    let (slow_url, _s1) = spawn_stub(CallBehaviour::SlowSuccess(1500));
+    let (quick_url, _s2) = spawn_stub(CallBehaviour::Success);
+    let slow = connect_stub_named("slow", slow_url, None).await;
+    let quick = connect_stub_named("quick", quick_url, None).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![
+        McpConnectionEntry::new(slow),
+        McpConnectionEntry::new(quick),
+    ]);
+
+    let slow_call = async {
+        let t = std::time::Instant::now();
+        let r = call(&conns, "t1", "mcp_slow_slowop").await;
+        (r, t.elapsed())
+    };
+    let others = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let t = std::time::Instant::now();
+        let r = call(&conns, "t2", "mcp_quick_slowop").await;
+        let quick_elapsed = t.elapsed();
+        let t = std::time::Instant::now();
+        let names: Vec<String> = conns
+            .lock()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        (r, quick_elapsed, t.elapsed(), names)
+    };
+    let ((slow_result, slow_elapsed), (quick_result, quick_elapsed, list_elapsed, names)) =
+        tokio::join!(slow_call, others);
+
+    assert!(!slow_result.is_error, "{}", slow_result.content);
+    assert!(!quick_result.is_error, "{}", quick_result.content);
+    assert!(
+        slow_elapsed >= std::time::Duration::from_millis(1400),
+        "the slow call really was slow: {slow_elapsed:?}"
+    );
+    assert!(
+        quick_elapsed < std::time::Duration::from_millis(700),
+        "a call on another server waited for the slow one: {quick_elapsed:?}"
+    );
+    assert!(
+        list_elapsed < std::time::Duration::from_millis(200),
+        "reading the connection list waited for the slow call: {list_elapsed:?}"
+    );
+    assert_eq!(names, vec!["slow", "quick"]);
+}
+
+/// Calls to the SAME server still go one at a time after this change (that is step 2's business, and opt-in): the second call starts when the first has finished.
+#[tokio::test]
+async fn calls_to_the_same_server_are_still_serialized() {
+    let (url, _s) = spawn_stub(CallBehaviour::SlowSuccess(600));
+    let conn = connect_stub_named("one", url, None).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+
+    let t = std::time::Instant::now();
+    let (a, b) = tokio::join!(
+        call(&conns, "t1", "mcp_one_slowop"),
+        call(&conns, "t2", "mcp_one_slowop"),
+    );
+    assert!(!a.is_error && !b.is_error);
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(1100),
+        "two 600 ms calls on one server overlapped: {:?}",
+        t.elapsed()
+    );
+}
+
+// --------------------------------------------------------------------------- Reconnect while a call is in flight ---------------------------------------------------------------------------
+
+/// Reconnect closes the old entry while a call may be running on it.
+/// `close` must wait for that call (so the transport is not torn down under it), and a call that finishes against a retired entry must not mark the replacement connection of the same name as failing.
+#[tokio::test]
+async fn closing_waits_for_the_call_in_flight_and_its_outcome_is_not_reported() {
+    let (url, _stub) = spawn_stub(CallBehaviour::Wedge);
+    let reporter = Arc::new(RecordingReporter::default());
+    let conn = connect_stub(url, Some(Arc::clone(&reporter) as Arc<RecordingReporter>)).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let entry = Arc::clone(&conns.lock().await[0]);
+
+    let call = async {
+        let r = call(&conns, "t1", "mcp_wedged_slowop").await;
+        (r, std::time::Instant::now())
+    };
+    let closer = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // What reconnect does: take the entry off the list, then close it.
+        conns.lock().await.clear();
+        entry.close().await;
+        std::time::Instant::now()
+    };
+    let ((result, call_done), close_done) = tokio::join!(call, closer);
+
+    assert!(
+        result.is_error,
+        "the wedged call still fails on its own timeout"
+    );
+    assert!(
+        close_done >= call_done,
+        "close() returned before the call in flight finished"
+    );
+    assert!(entry.is_retired());
+    assert!(
+        reporter.transport_failures().is_empty(),
+        "the outcome of a call on a retired connection reached the health monitor: {:?}",
+        reporter.transport_failures()
+    );
+    assert!(
+        entry.lock().await.is_none(),
+        "close() leaves the entry empty"
+    );
+}
+
+/// A call that cloned the entry before it was closed and locks it afterwards gets a clear error, not a closed transport.
+#[tokio::test]
+async fn a_call_queued_behind_close_fails_cleanly() {
+    let (url, _stub) = spawn_stub(CallBehaviour::SlowSuccess(800));
+    let conn = connect_stub_named("one", url, None).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn)]);
+    let entry = Arc::clone(&conns.lock().await[0]);
+
+    let first = call(&conns, "t1", "mcp_one_slowop");
+    let closer = async {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        entry.close().await;
+    };
+    let queued = async {
+        // The entry is still in the list (closed but not yet removed): the call finds it, queues behind close().
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        call(&conns, "t2", "mcp_one_slowop").await
+    };
+    let (first, _, queued) = tokio::join!(first, closer, queued);
+
+    assert!(
+        !first.is_error,
+        "the call in flight completes: {}",
+        first.content
+    );
+    assert!(queued.is_error);
+    assert!(
+        queued
+            .content
+            .contains("was closed while the call was waiting"),
+        "{}",
+        queued.content
+    );
 }

@@ -22,7 +22,7 @@ use librefang_runtime::a2a::{A2aTaskStore, AgentCard};
 use librefang_runtime::audit::AuditLog;
 use librefang_runtime::browser::BrowserManager;
 use librefang_runtime::embedding::EmbeddingDriver;
-use librefang_runtime::mcp::McpConnection;
+use librefang_runtime::mcp::McpConnectionList;
 use librefang_runtime::mcp_oauth::{McpAuthStates, McpOAuthProvider};
 use librefang_runtime::media::MediaDriverCache;
 use librefang_runtime::media_understanding::MediaEngine;
@@ -156,7 +156,7 @@ impl McpSubsystemApi for LibreFangKernel {
         self.mcp.health()
     }
     #[inline]
-    fn connections_ref(&self) -> &tokio::sync::Mutex<Vec<McpConnection>> {
+    fn connections_ref(&self) -> &McpConnectionList {
         self.mcp.connections_ref()
     }
     #[inline]

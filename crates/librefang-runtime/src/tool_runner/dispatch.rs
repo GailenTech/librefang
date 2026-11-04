@@ -48,7 +48,7 @@ pub struct ToolExecContext<'a> {
     pub skill_registry: Option<&'a SkillRegistry>,
     /// Skill allowlist for the calling agent. Empty slice = all skills allowed.
     pub allowed_skills: Option<&'a [String]>,
-    pub mcp_connections: Option<&'a tokio::sync::Mutex<Vec<mcp::McpConnection>>>,
+    pub mcp_connections: Option<&'a mcp::McpConnectionList>,
     pub web_ctx: Option<&'a WebToolsContext>,
     pub browser_ctx: Option<&'a crate::browser::BrowserManager>,
     pub allowed_env_vars: Option<&'a [String]>,
@@ -1592,36 +1592,55 @@ async fn dispatch_tool_call(
                 if let Some(mcp_conns) = mcp_connections {
                     let caller_ctx =
                         mcp::CallerContext::from_parts(*sender_id, *channel, *chat_id, *session_id);
-                    let mut conns = mcp_conns.lock().await;
-                    let server_name =
-                        mcp::resolve_mcp_server_from_known(other, conns.iter().map(|c| c.name()))
-                            .map(str::to_string);
+                    // Hold the list lock only long enough to find the entry: the call below holds the lock of that one connection, so a slow server delays calls to itself and nothing else.
+                    let (server_name, entry) = {
+                        let conns = mcp_conns.lock().await;
+                        let server_name = mcp::resolve_mcp_server_from_known(
+                            other,
+                            conns.iter().map(|c| c.name()),
+                        )
+                        .map(str::to_string);
+                        let entry = server_name.as_deref().and_then(|name| {
+                            conns.iter().find(|c| c.name() == name).map(Arc::clone)
+                        });
+                        (server_name, entry)
+                    };
                     if let Some(server_name) = server_name {
-                        if let Some(conn) =
-                            conns.iter_mut().find(|c| c.name() == server_name.as_str())
-                        {
+                        if let Some(entry) = entry {
                             debug!(
                                 tool = other,
                                 server = server_name,
                                 "Dispatching to MCP server"
                             );
-                            // #7963: report the outcome of every MCP tool call to the kernel's health monitor through the connection's health reporter.
-                            // This is the only path that observes a server which completed its handshake and later wedged; without it `should_reconnect` was structurally unreachable, so a dead server stayed dead until the daemon restarted while `/api/mcp/health` reported it healthy.
-                            //
-                            // `report_call_outcome` reports only transport-level failures — an application error (bad arguments, file not found) leaves health untouched, because the server answered.
-                            let result = conn
-                                .call_tool_with_caller(other, input, caller_ctx.as_ref())
-                                .await;
-                            conn.report_call_outcome(result.as_ref().map(|_| ()));
-                            match result {
-                                Ok(content) => {
-                                    // An MCP server answers over stdio or HTTP and the transport does not expose a wire byte count, so the response payload the agent receives is the honest measure of what this call pulled in.
-                                    crate::network_meter::record(content.len() as u64);
-                                    Ok(content)
-                                }
-                                Err(e) => Err(ToolError::upstream_msg(format!(
-                                    "MCP tool call failed: {e}"
+                            let mut guard = entry.lock().await;
+                            match guard.as_mut() {
+                                None => Err(ToolError::upstream_msg(format!(
+                                    "MCP tool call failed: connection to '{server_name}' was closed while the call was waiting"
                                 ))),
+                                Some(conn) => {
+                                    // #7963: report the outcome of every MCP tool call to the kernel's health monitor through the connection's health reporter.
+                                    // This is the only path that observes a server which completed its handshake and later wedged; without it `should_reconnect` was structurally unreachable, so a dead server stayed dead until the daemon restarted while `/api/mcp/health` reported it healthy.
+                                    //
+                                    // `report_call_outcome` reports only transport-level failures — an application error (bad arguments, file not found) leaves health untouched, because the server answered.
+                                    // A connection retired while the call was in flight (reconnect, hot-reload) is not reported: health is keyed by server name, and the name now belongs to its replacement.
+                                    let result = conn
+                                        .call_tool_with_caller(other, input, caller_ctx.as_ref())
+                                        .await;
+                                    if !entry.is_retired() {
+                                        conn.report_call_outcome(result.as_ref().map(|_| ()));
+                                    }
+                                    drop(guard);
+                                    match result {
+                                        Ok(content) => {
+                                            // An MCP server answers over stdio or HTTP and the transport does not expose a wire byte count, so the response payload the agent receives is the honest measure of what this call pulled in.
+                                            crate::network_meter::record(content.len() as u64);
+                                            Ok(content)
+                                        }
+                                        Err(e) => Err(ToolError::upstream_msg(format!(
+                                            "MCP tool call failed: {e}"
+                                        ))),
+                                    }
+                                }
                             }
                         } else {
                             Err(ToolError::upstream_msg(format!(
@@ -1752,7 +1771,7 @@ pub async fn execute_tool(
     caller_agent_id: Option<&str>,
     skill_registry: Option<&SkillRegistry>,
     allowed_skills: Option<&[String]>,
-    mcp_connections: Option<&tokio::sync::Mutex<Vec<mcp::McpConnection>>>,
+    mcp_connections: Option<&mcp::McpConnectionList>,
     web_ctx: Option<&WebToolsContext>,
     browser_ctx: Option<&crate::browser::BrowserManager>,
     allowed_env_vars: Option<&[String]>,
@@ -1837,7 +1856,7 @@ pub async fn execute_tool_with_sender_account(
     caller_agent_id: Option<&str>,
     skill_registry: Option<&SkillRegistry>,
     allowed_skills: Option<&[String]>,
-    mcp_connections: Option<&tokio::sync::Mutex<Vec<mcp::McpConnection>>>,
+    mcp_connections: Option<&mcp::McpConnectionList>,
     web_ctx: Option<&WebToolsContext>,
     browser_ctx: Option<&crate::browser::BrowserManager>,
     allowed_env_vars: Option<&[String]>,
