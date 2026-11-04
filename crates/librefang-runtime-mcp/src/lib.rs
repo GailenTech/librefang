@@ -2510,6 +2510,8 @@ pub struct McpConnectionEntry {
     conn: tokio::sync::RwLock<Option<McpConnection>>,
     permits: tokio::sync::Semaphore,
     max_concurrent_calls: usize,
+    /// The server's `timeout_secs`: bounds one call, and is also the longest a call is allowed to queue for a slot.
+    timeout_secs: u64,
     /// Set by [`close`](Self::close). A call that finishes after its entry was retired (reconnect, hot-reload, removal) must not report its outcome to the health monitor: health is keyed by server name, and the name now belongs to the replacement connection.
     retired: std::sync::atomic::AtomicBool,
 }
@@ -2540,12 +2542,14 @@ impl McpConnectionEntry {
     /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1.
     pub fn new(conn: McpConnection, max_concurrent_calls: usize) -> Arc<Self> {
         let max_concurrent_calls = max_concurrent_calls.max(1);
+        let timeout_secs = conn.config.timeout_secs;
         Arc::new(Self {
             name: conn.name().to_string(),
             tools: conn.tools().to_vec(),
             conn: tokio::sync::RwLock::new(Some(conn)),
             permits: tokio::sync::Semaphore::new(max_concurrent_calls),
             max_concurrent_calls,
+            timeout_secs,
             retired: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -2563,6 +2567,11 @@ impl McpConnectionEntry {
     /// How many calls may be in flight on this connection at once.
     pub fn max_concurrent_calls(&self) -> usize {
         self.max_concurrent_calls
+    }
+
+    /// The server's per-call timeout in seconds.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
     }
 
     /// Wait for a slot to call this connection. The wait is the queueing time behind other calls to the same server; callers that want to keep it out of a tool timeout measure and bound it themselves.

@@ -1113,7 +1113,8 @@ pub(super) async fn execute_single_tool_call_core(
     });
     let trace_start = Instant::now();
     let trace_timestamp = chrono::Utc::now();
-    let result = match tokio::time::timeout(
+    // Time spent queued for a free slot on an MCP server is not charged to `tool_timeout`: see `tool_wait`.
+    let result = match crate::tool_wait::timeout_excluding_waits(
         Duration::from_secs(tool_timeout),
         tool_runner::execute_tool_with_sender_account(
             &tool_call.id,

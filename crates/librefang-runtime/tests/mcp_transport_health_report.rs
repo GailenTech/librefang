@@ -470,6 +470,47 @@ async fn a_limit_of_zero_behaves_as_one() {
     assert_eq!(McpConnectionEntry::new(conn, 0).max_concurrent_calls(), 1);
 }
 
+// --------------------------------------------------------------------------- Queueing vs tool timeout ---------------------------------------------------------------------------
+
+/// The second call on a server queues behind the first. Its tool timeout (here 900 ms) is smaller than queue + run (600 + 600 ms) but larger than the run alone, so it only succeeds if queueing is left out of the clock.
+/// The control, without the exclusion, shows the same calls DO fail under a plain timeout (the behaviour before this change).
+#[tokio::test]
+async fn time_queued_for_a_slot_does_not_count_against_the_tool_timeout() {
+    use librefang_runtime::tool_wait::timeout_excluding_waits;
+    use std::time::Duration;
+
+    let (url, _s) = spawn_stub(CallBehaviour::SlowSuccess(600));
+    let conn = connect_stub_named("one", url, None).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
+    let budget = Duration::from_millis(900);
+
+    let (a, b) = tokio::join!(
+        timeout_excluding_waits(budget, call(&conns, "t1", "mcp_one_slowop")),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            timeout_excluding_waits(budget, call(&conns, "t2", "mcp_one_slowop")).await
+        },
+    );
+    let (a, b) = (
+        a.expect("first call within budget"),
+        b.expect("queued call must not be cut off while it waits"),
+    );
+    assert!(!a.is_error && !b.is_error, "{} / {}", a.content, b.content);
+
+    // Control: same shape under a plain timeout, the queued call is cut off.
+    let (_, b) = tokio::join!(
+        tokio::time::timeout(budget, call(&conns, "t3", "mcp_one_slowop")),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::timeout(budget, call(&conns, "t4", "mcp_one_slowop")).await
+        },
+    );
+    assert!(
+        b.is_err(),
+        "control: a plain timeout does include the queueing"
+    );
+}
+
 // --------------------------------------------------------------------------- Reconnect while a call is in flight ---------------------------------------------------------------------------
 
 /// Reconnect closes the old entry while a call may be running on it.

@@ -19,7 +19,7 @@ use librefang_types::tool::{ToolDefinition, ToolExecutionStatus, ToolResult};
 use librefang_types::tool_compat::normalize_tool_name;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Get the current inter-agent call depth from the task-local context.
 /// Returns 0 if called outside an agent task.
@@ -1612,7 +1612,38 @@ async fn dispatch_tool_call(
                                 server = server_name,
                                 "Dispatching to MCP server"
                             );
-                            let slot = entry.acquire().await;
+                            // Queueing for a slot is not the tool running: it is excluded from the agent loop's `tool_timeout_secs` (see `tool_wait`) and bounded here by the server's own `timeout_secs` instead, with an error that says the call was never sent.
+                            let wait_guard = crate::tool_wait::begin_wait();
+                            let wait_started = std::time::Instant::now();
+                            let acquired = tokio::time::timeout(
+                                std::time::Duration::from_secs(entry.timeout_secs()),
+                                entry.acquire(),
+                            )
+                            .await;
+                            drop(wait_guard);
+                            let waited = wait_started.elapsed();
+                            record_mcp_slot_wait(
+                                &server_name,
+                                other,
+                                waited,
+                                entry.max_concurrent_calls(),
+                            );
+                            let slot = match acquired {
+                                Ok(slot) => slot,
+                                Err(_) => {
+                                    return ToolResult {
+                                        tool_use_id: tool_use_id.to_string(),
+                                        content: format!(
+                                            "MCP tool call not sent: waited {}s for a free slot on server '{server_name}' ({} concurrent call(s) allowed) and gave up. The server is busy with earlier calls.",
+                                            waited.as_secs(),
+                                            entry.max_concurrent_calls()
+                                        ),
+                                        status: ToolExecutionStatus::Error,
+                                        is_error: true,
+                                        ..Default::default()
+                                    };
+                                }
+                            };
                             match slot.as_ref().ok().and_then(|s| s.connection()) {
                                 None => Err(ToolError::upstream_msg(format!(
                                     "MCP tool call failed: connection to '{server_name}' was closed while the call was waiting"
@@ -2164,6 +2195,26 @@ pub async fn execute_tool_with_sender_account(
         acting_principal,
     };
     execute_tool_raw(tool_use_id, tool_name, input, &ctx).await
+}
+
+/// Report how long an MCP call queued for a slot on its server: a histogram per server, and a log line when the wait is long enough to matter.
+fn record_mcp_slot_wait(
+    server: &str,
+    tool: &str,
+    waited: std::time::Duration,
+    max_concurrent: usize,
+) {
+    metrics::histogram!("librefang_mcp_slot_wait_seconds", "server" => server.to_string())
+        .record(waited.as_secs_f64());
+    if waited >= std::time::Duration::from_millis(250) {
+        info!(
+            server,
+            tool,
+            waited_ms = waited.as_millis() as u64,
+            max_concurrent_calls = max_concurrent,
+            "MCP call waited for a free slot on its server"
+        );
+    }
 }
 
 #[cfg(test)]
