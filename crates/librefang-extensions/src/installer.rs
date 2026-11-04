@@ -191,6 +191,7 @@ pub fn catalog_entry_to_mcp_server(entry: &McpCatalogEntry) -> McpServerConfigEn
         oauth,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 

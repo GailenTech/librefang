@@ -5761,6 +5761,7 @@ async fn concurrent_mcp_connect_paths_register_one_connection_per_server() {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     });
 
     let kernel = Arc::new(LibreFangKernel::boot_with_config(config).expect("boot"));
@@ -5813,6 +5814,7 @@ async fn disconnect_waits_for_inflight_mcp_connection_before_removing_it() {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     });
 
     let kernel = Arc::new(LibreFangKernel::boot_with_config(config).expect("boot"));
@@ -5874,6 +5876,7 @@ async fn mcp_connection_paths_do_not_reconnect_after_auth_is_revoked() {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     });
 
     let kernel = Arc::new(LibreFangKernel::boot_with_config(config).expect("boot"));
@@ -5934,6 +5937,7 @@ async fn mcp_config_change_clears_stale_needs_auth_before_reconnect() {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     });
 
     let kernel = Arc::new(LibreFangKernel::boot_with_config(config).expect("boot"));
@@ -6026,6 +6030,7 @@ async fn config_hot_reload_waits_for_inflight_mcp_auth_result_before_resetting_s
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     });
 
     let mut file_config = config.clone();
@@ -11470,6 +11475,7 @@ fn register_mcp_server(kernel: &LibreFangKernel, server_name: &str) {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     };
     kernel
         .mcp

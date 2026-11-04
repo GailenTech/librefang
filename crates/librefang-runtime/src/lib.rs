@@ -108,6 +108,7 @@ pub mod tool_exec_daytona;
 pub mod tool_exec_ssh;
 pub mod tool_policy;
 pub mod tool_runner;
+pub mod tool_wait;
 pub mod trace_store;
 pub use tool_classifier::classify_tool;
 pub mod tts;

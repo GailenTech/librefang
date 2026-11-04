@@ -124,7 +124,7 @@ async fn http_compat_call_tool_renders_path_and_returns_body() {
         .await;
 
     let config = http_compat_config(server.uri(), vec![weather_tool()]);
-    let mut conn = McpConnection::connect(config)
+    let conn = McpConnection::connect(config)
         .await
         .expect("HttpCompat connect should succeed");
 
@@ -161,7 +161,7 @@ async fn http_compat_call_tool_unknown_name_errors() {
         .await;
 
     let config = http_compat_config(server.uri(), vec![weather_tool()]);
-    let mut conn = McpConnection::connect(config).await.expect("connect");
+    let conn = McpConnection::connect(config).await.expect("connect");
 
     // Calling a tool that was never registered must fail rather than
     // silently issuing an unrelated request.

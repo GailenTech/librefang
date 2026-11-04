@@ -2707,6 +2707,7 @@ input_schema = {{ type = "object" }}
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         }
     }
 
@@ -2941,6 +2942,7 @@ input_schema = {{ type = "object" }}
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         };
         let (kernel, _dir) = boot_pending_kernel(vec![broken]);
         let agent_id = spawn_pending_agent(&kernel, "pending-mcp-agent", &[], &["ghost-mcp"]);

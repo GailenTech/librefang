@@ -6971,6 +6971,18 @@ pub struct McpServerConfigEntry {
     /// When `taint_scanning = false`, this field is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taint_policy: Option<McpTaintPolicy>,
+    /// How many tool calls may be in flight on this server's connection at once (default: 1).
+    ///
+    /// With 1, calls to this server run one at a time, which is what every server saw before this setting existed.
+    /// Raise it only for servers that handle concurrent requests. Whether the calls overlap on the wire also depends on the transport: stdio and Streamable HTTP answering with SSE multiplex, Streamable HTTP answering with plain JSON is serialized per connection by the client library.
+    /// Applied when the connection is (re)established; changing it in a hot reload does not touch a live connection.
+    /// Values below 1 are treated as 1.
+    #[serde(default = "default_mcp_max_concurrent_calls")]
+    pub max_concurrent_calls: u32,
+}
+
+fn default_mcp_max_concurrent_calls() -> u32 {
+    1
 }
 
 fn default_taint_scanning() -> bool {
@@ -8465,7 +8477,7 @@ impl ToolInvokeConfig {
 /// enabled = false
 /// max_concurrent = 4
 /// mcp_default_safety = "write_shared"   # or "read_only"
-/// mcp_readonly_allowlist = ["mcp__github__list_issues"]
+/// mcp_readonly_allowlist = ["mcp_github_list_issues"]
 /// ```
 ///
 /// Falls back to fully sequential execution when `enabled = false`.
@@ -8493,7 +8505,7 @@ pub struct ParallelToolsConfig {
 
     /// Explicit allowlist of MCP tool names that should be treated as
     /// `ReadOnly` regardless of `mcp_default_safety`. Names match the
-    /// fully-namespaced form (`mcp__server__name`).
+    /// fully-namespaced form (`mcp_server_name`).
     pub mcp_readonly_allowlist: Vec<String>,
 }
 

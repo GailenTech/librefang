@@ -412,7 +412,10 @@ impl LibreFangKernel {
             // compiles and dispatches fine while silently reporting nothing, which is
             // exactly the invisible hole #7963 was.
             match self.connect_mcp_wired(mcp_config).await {
-                Ok(conn) => connections.push(librefang_runtime::mcp::McpConnectionEntry::new(conn)),
+                Ok(conn) => connections.push(librefang_runtime::mcp::McpConnectionEntry::new(
+                    conn,
+                    server_config.max_concurrent_calls as usize,
+                )),
                 Err(e) => warn!(
                     server = %server_config.name,
                     error = %e,

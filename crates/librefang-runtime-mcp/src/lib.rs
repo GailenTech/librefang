@@ -983,7 +983,7 @@ enum McpInner {
     Sse {
         client: reqwest::Client,
         url: String,
-        next_id: u64,
+        next_id: std::sync::atomic::AtomicU64,
         /// Auth / custom headers applied to every SSE request: config-declared
         /// static headers plus a cached OAuth bearer token, mirroring the
         /// Streamable-HTTP path so SSE-transport servers are authenticated too.
@@ -1728,7 +1728,7 @@ impl McpConnection {
             McpInner::Sse {
                 client,
                 url: url.to_string(),
-                next_id: 1,
+                next_id: std::sync::atomic::AtomicU64::new(1),
                 headers: auth_headers,
             },
             None, // Tools discovered later via sse_initialize + sse_discover_tools
@@ -2104,22 +2104,21 @@ impl McpConnection {
     /// Errors are classified (#7963) by the same rule the rmcp path uses: a well-formed JSON-RPC error response is an application error, while anything that means no well-formed response arrived — the POST failed, a non-2xx status, a proxy error page instead of JSON, an undecodable body — is transport-level.
     /// Callers that still deal in `String` errors keep working through `From<McpCallError> for String`.
     async fn sse_send_request(
-        &mut self,
+        &self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, McpCallError> {
         // Extract owned copies of the values we need before any async work,
         // so we don't hold a borrow of `self.inner` across an await point
         // (which would conflict with the concurrent borrow of `self.config`).
-        let (client, url, id, headers) = match &mut self.inner {
+        let (client, url, id, headers) = match &self.inner {
             McpInner::Sse {
                 client,
                 url,
                 next_id,
                 headers,
             } => {
-                let id = *next_id;
-                *next_id += 1;
+                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 (client.clone(), url.clone(), id, headers.clone())
             }
             _ => {
@@ -2205,7 +2204,7 @@ impl McpConnection {
     }
 
     async fn sse_send_notification(
-        &mut self,
+        &self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<(), String> {
@@ -2492,15 +2491,27 @@ impl Drop for McpConnection {
 /// One live MCP connection as the kernel's connection list stores it.
 ///
 /// The list used to be a single `Mutex<Vec<McpConnection>>` and a tool call held that mutex for its whole network round trip, so every MCP call in the process (any agent, any server) and every reader of the list (`GET /api/mcp/servers`, reconnect) queued behind it.
-/// The list now holds `Arc<McpConnectionEntry>`: the list lock only protects membership and is released as soon as the entry is cloned out, and each connection has its own lock, so a slow call blocks only calls to the same server.
+/// The list now holds `Arc<McpConnectionEntry>`: the list lock only protects membership and is released as soon as the entry is cloned out, and each connection has its own gate, so a slow call blocks only calls to the same server.
 ///
-/// `name` and `tools` are copied out at construction (they never change after `connect`), so readers that only list servers and tools never touch the per-connection lock and are not delayed by a call in flight.
+/// `name` and `tools` are copied out at construction (they never change after `connect`), so readers that only list servers and tools never touch the connection and are not delayed by a call in flight.
 ///
-/// The connection sits in an `Option` so it can be closed in place: [`McpConnectionEntry::close`] waits for the call in flight, takes the connection out and closes it, and any call that was queued behind it finds `None` and fails with a plain error instead of talking to a closed transport.
+/// # Calls to one server
+///
+/// A call takes a permit from a per-server semaphore of `max_concurrent_calls` permits and then a *shared* lock on the connection.
+/// With the default of 1 permit calls to one server run one at a time, exactly as before; a higher value (`max_concurrent_calls` in the server's config) lets that many calls be in flight together.
+/// Whether they overlap on the wire still depends on the transport: stdio and Streamable HTTP answering with SSE multiplex, Streamable HTTP answering with plain JSON is serialized by rmcp's worker per connection.
+///
+/// # Closing
+///
+/// The connection sits in an `Option` behind a `RwLock` so it can be closed in place: [`McpConnectionEntry::close`] closes the semaphore (queued callers fail at once), waits for the calls in flight to drop their shared lock, takes the connection out and closes it.
 pub struct McpConnectionEntry {
     name: String,
     tools: Vec<ToolDefinition>,
-    conn: tokio::sync::Mutex<Option<McpConnection>>,
+    conn: tokio::sync::RwLock<Option<McpConnection>>,
+    permits: tokio::sync::Semaphore,
+    max_concurrent_calls: usize,
+    /// The server's `timeout_secs`: bounds one call, and is also the longest a call is allowed to queue for a slot.
+    timeout_secs: u64,
     /// Set by [`close`](Self::close). A call that finishes after its entry was retired (reconnect, hot-reload, removal) must not report its outcome to the health monitor: health is keyed by server name, and the name now belongs to the replacement connection.
     retired: std::sync::atomic::AtomicBool,
 }
@@ -2508,30 +2519,72 @@ pub struct McpConnectionEntry {
 /// The kernel's list of live connections. See [`McpConnectionEntry`].
 pub type McpConnectionList = tokio::sync::Mutex<Vec<Arc<McpConnectionEntry>>>;
 
+/// The entry was closed (reconnect, hot-reload, removal) before or while the caller was waiting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpEntryClosed;
+
+/// Permission to make one call on a connection: a permit of the server's concurrency limit plus a shared lock on the connection. Dropping it releases both.
+pub struct McpCallSlot<'a> {
+    _permit: tokio::sync::SemaphorePermit<'a>,
+    guard: tokio::sync::RwLockReadGuard<'a, Option<McpConnection>>,
+}
+
+impl McpCallSlot<'_> {
+    /// The connection, or `None` if it was closed between getting the permit and getting the lock.
+    pub fn connection(&self) -> Option<&McpConnection> {
+        self.guard.as_ref()
+    }
+}
+
 impl McpConnectionEntry {
     /// Wrap a freshly connected `conn` for storage in an [`McpConnectionList`].
-    pub fn new(conn: McpConnection) -> Arc<Self> {
+    ///
+    /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1.
+    pub fn new(conn: McpConnection, max_concurrent_calls: usize) -> Arc<Self> {
+        let max_concurrent_calls = max_concurrent_calls.max(1);
+        let timeout_secs = conn.config.timeout_secs;
         Arc::new(Self {
             name: conn.name().to_string(),
             tools: conn.tools().to_vec(),
-            conn: tokio::sync::Mutex::new(Some(conn)),
+            conn: tokio::sync::RwLock::new(Some(conn)),
+            permits: tokio::sync::Semaphore::new(max_concurrent_calls),
+            max_concurrent_calls,
+            timeout_secs,
             retired: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Server name. Does not take the connection lock.
+    /// Server name. Does not touch the connection.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Tools discovered at connect time. Does not take the connection lock.
+    /// Tools discovered at connect time. Does not touch the connection.
     pub fn tools(&self) -> &[ToolDefinition] {
         &self.tools
     }
 
-    /// Lock this connection only. `None` inside the guard means the entry was closed while the caller was queued.
-    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Option<McpConnection>> {
-        self.conn.lock().await
+    /// How many calls may be in flight on this connection at once.
+    pub fn max_concurrent_calls(&self) -> usize {
+        self.max_concurrent_calls
+    }
+
+    /// The server's per-call timeout in seconds.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    /// Wait for a slot to call this connection. The wait is the queueing time behind other calls to the same server; callers that want to keep it out of a tool timeout measure and bound it themselves.
+    pub async fn acquire(&self) -> Result<McpCallSlot<'_>, McpEntryClosed> {
+        let permit = self.permits.acquire().await.map_err(|_| McpEntryClosed)?;
+        let guard = self.conn.read().await;
+        if guard.is_none() {
+            return Err(McpEntryClosed);
+        }
+        Ok(McpCallSlot {
+            _permit: permit,
+            guard,
+        })
     }
 
     /// Whether [`close`](Self::close) has been called on this entry.
@@ -2541,11 +2594,13 @@ impl McpConnectionEntry {
 
     /// Close the connection in place.
     ///
-    /// Waits for the call that holds the connection lock (bounded by that call's own timeout), then closes the transport. Calls queued behind it see a closed entry. The entry is marked retired first, so outcomes of calls that were already in flight are not attributed to a replacement connection of the same name.
+    /// Marks the entry retired first, so outcomes of calls already in flight are not attributed to a replacement connection of the same name, and closes the semaphore so callers still queued fail at once instead of waiting their turn on a connection that is going away.
+    /// Then waits for the calls in flight (each bounded by its own timeout) before closing the transport underneath them.
     pub async fn close(&self) {
         self.retired
             .store(true, std::sync::atomic::Ordering::Release);
-        let taken = self.conn.lock().await.take();
+        self.permits.close();
+        let taken = self.conn.write().await.take();
         if let Some(conn) = taken {
             conn.close().await;
         }
@@ -2725,11 +2780,11 @@ impl McpConnection {
     /// `list_resources` / `read_resource` tools reach the server over the very
     /// transport a wedge breaks, so a timeout here has to count toward
     /// auto-reconnect exactly as a wedged `tools/call` does.
-    pub async fn list_resources(&mut self) -> Result<Vec<ResourceInfo>, McpCallError> {
+    pub async fn list_resources(&self) -> Result<Vec<ResourceInfo>, McpCallError> {
         let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
         match self.transport_kind() {
             McpTransportKind::Rmcp => {
-                let McpInner::Rmcp(client) = &mut self.inner else {
+                let McpInner::Rmcp(client) = &self.inner else {
                     unreachable!()
                 };
                 let resources = tokio::time::timeout(timeout, client.list_all_resources())
@@ -2770,13 +2825,11 @@ impl McpConnection {
 
     /// List the URI templates this MCP server exposes
     /// (`resources/templates/list`).
-    pub async fn list_resource_templates(
-        &mut self,
-    ) -> Result<Vec<ResourceTemplateInfo>, McpCallError> {
+    pub async fn list_resource_templates(&self) -> Result<Vec<ResourceTemplateInfo>, McpCallError> {
         let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
         match self.transport_kind() {
             McpTransportKind::Rmcp => {
-                let McpInner::Rmcp(client) = &mut self.inner else {
+                let McpInner::Rmcp(client) = &self.inner else {
                     unreachable!()
                 };
                 let templates = tokio::time::timeout(timeout, client.list_all_resource_templates())
@@ -2819,11 +2872,11 @@ impl McpConnection {
 
     /// Read a single resource by URI (`resources/read`), returning its text
     /// content joined; binary blobs are elided rather than inlined (#6501).
-    pub async fn read_resource(&mut self, uri: &str) -> Result<String, McpCallError> {
+    pub async fn read_resource(&self, uri: &str) -> Result<String, McpCallError> {
         let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
         match self.transport_kind() {
             McpTransportKind::Rmcp => {
-                let McpInner::Rmcp(client) = &mut self.inner else {
+                let McpInner::Rmcp(client) = &self.inner else {
                     unreachable!()
                 };
                 let params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
@@ -2946,7 +2999,7 @@ impl McpConnection {
     /// Route an intercepted synthetic resource tool to the matching
     /// `resources/*` method (#6501).
     async fn dispatch_resource_op(
-        &mut self,
+        &self,
         raw_name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, McpCallError> {
@@ -2994,7 +3047,7 @@ impl McpConnection {
     /// through `call_tool_with_caller` so MCP servers receive the
     /// kernel-attested identity (#5699).
     pub async fn call_tool(
-        &mut self,
+        &self,
         name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, McpCallError> {
@@ -3039,7 +3092,7 @@ impl McpConnection {
     /// arguments — before any kernel mutation — so a malicious agent cannot
     /// hide credential-shaped data behind a `_librefang_caller` key.
     pub async fn call_tool_with_caller(
-        &mut self,
+        &self,
         name: &str,
         arguments: &serde_json::Value,
         caller: Option<&CallerContext>,
@@ -3131,7 +3184,7 @@ impl McpConnection {
 
         match kind {
             TransportKind::Rmcp => {
-                let McpInner::Rmcp(client) = &mut self.inner else {
+                let McpInner::Rmcp(client) = &self.inner else {
                     unreachable!()
                 };
 
@@ -4381,7 +4434,7 @@ mod tests {
         // `base_url` points at a closed loopback port — if validation
         // skipped, the test would hang or surface a connection error
         // instead of the structured validation message.
-        let mut conn = McpConnection {
+        let conn = McpConnection {
             config: McpServerConfig {
                 name: "guard".to_string(),
                 transport: McpTransport::HttpCompat {
@@ -5635,7 +5688,7 @@ mod tests {
             }
         });
 
-        let mut conn = McpConnection::connect(McpServerConfig {
+        let conn = McpConnection::connect(McpServerConfig {
             name: "http-tools".to_string(),
             transport: McpTransport::HttpCompat {
                 base_url: format!("http://{}", addr),
@@ -6263,7 +6316,7 @@ mod tests {
             }
         });
 
-        let mut conn = McpConnection::connect(McpServerConfig {
+        let conn = McpConnection::connect(McpServerConfig {
             name: "sse-res".to_string(),
             transport: McpTransport::Sse {
                 url: format!("http://{addr}/sse"),
@@ -6354,7 +6407,7 @@ mod tests {
             }
         });
 
-        let mut conn = McpConnection::connect(McpServerConfig {
+        let conn = McpConnection::connect(McpServerConfig {
             name: "sse-res2".to_string(),
             transport: McpTransport::Sse {
                 url: format!("http://{addr}/sse"),

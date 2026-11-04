@@ -54,6 +54,7 @@ fn entry_http(name: &str, url: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 
@@ -71,6 +72,7 @@ fn entry_stdio(name: &str) -> McpServerConfigEntry {
         oauth: None,
         taint_scanning: true,
         taint_policy: None,
+        max_concurrent_calls: 1,
     }
 }
 

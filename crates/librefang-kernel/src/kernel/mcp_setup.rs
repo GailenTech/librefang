@@ -302,7 +302,10 @@ impl LibreFangKernel {
                         .mcp_connections
                         .lock()
                         .await
-                        .push(McpConnectionEntry::new(conn));
+                        .push(McpConnectionEntry::new(
+                            conn,
+                            server_config.max_concurrent_calls as usize,
+                        ));
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -505,7 +508,10 @@ impl LibreFangKernel {
                     .mcp_connections
                     .lock()
                     .await
-                    .push(McpConnectionEntry::new(conn));
+                    .push(McpConnectionEntry::new(
+                        conn,
+                        server_config.max_concurrent_calls as usize,
+                    ));
 
                 // Update auth state to Authorized
                 self.mcp.mcp_auth_states.lock().await.insert(
@@ -698,7 +704,10 @@ impl LibreFangKernel {
                         .mcp_connections
                         .lock()
                         .await
-                        .push(McpConnectionEntry::new(conn));
+                        .push(McpConnectionEntry::new(
+                            conn,
+                            server_config.max_concurrent_calls as usize,
+                        ));
                     connected_count += 1;
                 }
                 Err(e) => {
@@ -869,7 +878,10 @@ impl LibreFangKernel {
                     .mcp_connections
                     .lock()
                     .await
-                    .push(McpConnectionEntry::new(conn));
+                    .push(McpConnectionEntry::new(
+                        conn,
+                        server_config.max_concurrent_calls as usize,
+                    ));
                 // Cardinality: server label is the operator-configured MCP
                 // server id (bounded set), outcome is one of two fixed
                 // values. (#3495)
@@ -1067,6 +1079,7 @@ mod prefix_overlap_tests {
             oauth: None,
             taint_scanning: true,
             taint_policy: None,
+            max_concurrent_calls: 1,
         }
     }
 

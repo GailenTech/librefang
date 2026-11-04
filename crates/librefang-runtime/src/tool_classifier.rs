@@ -154,10 +154,10 @@ pub fn parallel_safety(name: &str, definition: Option<&ToolDefinition>) -> Paral
 ///    wins over operator config, as before).
 /// 2. `mcp_readonly_allowlist` membership → [`ParallelSafety::ReadOnly`]
 ///    (per the field's "regardless of `mcp_default_safety`" contract).
-/// 3. `mcp__`-prefixed tool with no annotation → `mcp_default_safety`.
+/// 3. MCP tool (`mcp_<server>_<tool>`, see [`crate::mcp::format_mcp_tool_name`]) with no annotation → `mcp_default_safety`.
 /// 4. Fallback to the name/annotation heuristic ([`classify_tool`]).
 ///
-/// Without this, an unannotated `mcp__server__tool` fell straight through to
+/// Without this, an unannotated `mcp_server_tool` fell straight through to
 /// `Unknown` → `WriteShared`, so `mcp_default_safety` / `mcp_readonly_allowlist`
 /// were silently ignored and read-only MCP calls never parallelised.
 pub fn parallel_safety_with_mcp(
@@ -174,7 +174,7 @@ pub fn parallel_safety_with_mcp(
         if cfg.mcp_readonly_allowlist.iter().any(|n| n == name) {
             return ParallelSafety::ReadOnly;
         }
-        if name.starts_with("mcp__") {
+        if crate::mcp::is_mcp_tool(name) {
             if let Some(class) = ParallelSafety::from_snake_case(&cfg.mcp_default_safety) {
                 return class;
             }
@@ -584,7 +584,7 @@ mod tests {
 
     /// Regression (#6441 follow-up): the operator's MCP parallel-safety
     /// overrides must actually be consulted. Without them an unannotated
-    /// `mcp__server__tool` falls through to `Unknown` → `WriteShared`, so a
+    /// `mcp_server_tool` falls through to `Unknown` → `WriteShared`, so a
     /// read-only MCP call never parallelises.
     #[test]
     fn parallel_safety_honours_mcp_overrides() {
@@ -592,19 +592,19 @@ mod tests {
 
         // Baseline: no config → unannotated mcp tool is WriteShared (unchanged).
         assert_eq!(
-            parallel_safety_with_mcp("mcp__db__query", None, None),
+            parallel_safety_with_mcp("mcp_db_query", None, None),
             ParallelSafety::WriteShared
         );
 
         let cfg = ParallelToolsConfig {
             enabled: true,
-            mcp_readonly_allowlist: vec!["mcp__db__query".to_string()],
+            mcp_readonly_allowlist: vec!["mcp_db_query".to_string()],
             mcp_default_safety: "write_shared".to_string(),
             ..Default::default()
         };
         // Allowlisted name → ReadOnly regardless of mcp_default_safety.
         assert_eq!(
-            parallel_safety_with_mcp("mcp__db__query", None, Some(&cfg)),
+            parallel_safety_with_mcp("mcp_db_query", None, Some(&cfg)),
             ParallelSafety::ReadOnly
         );
 
@@ -613,9 +613,9 @@ mod tests {
             mcp_default_safety: "read_only".to_string(),
             ..Default::default()
         };
-        // Any mcp__ tool (no annotation, not allowlisted) picks up the default.
+        // Any mcp_ tool (no annotation, not allowlisted) picks up the default.
         assert_eq!(
-            parallel_safety_with_mcp("mcp__github__list", None, Some(&cfg_ro)),
+            parallel_safety_with_mcp("mcp_github_list", None, Some(&cfg_ro)),
             ParallelSafety::ReadOnly
         );
         // A non-mcp tool is unaffected by the mcp default.
@@ -630,8 +630,37 @@ mod tests {
             "metadata": { "parallel_safety": "exclusive" }
         }));
         assert_eq!(
-            parallel_safety_with_mcp("mcp__db__query", Some(&def), Some(&cfg)),
+            parallel_safety_with_mcp("mcp_db_query", Some(&def), Some(&cfg)),
             ParallelSafety::Exclusive
+        );
+    }
+
+    /// The prefix check must follow the real naming scheme. The runtime names MCP tools `mcp_<server>_<tool>` (single underscores), and this check used to look for `mcp__`, so `mcp_default_safety` never applied to a real tool.
+    /// Building the name with the same function the runtime uses keeps the two from drifting apart again.
+    #[test]
+    fn mcp_default_safety_applies_to_names_the_runtime_actually_generates() {
+        use librefang_types::config::ParallelToolsConfig;
+
+        let name = crate::mcp::format_mcp_tool_name("github", "list_issues");
+        assert_eq!(name, "mcp_github_list_issues");
+        let cfg_ro = ParallelToolsConfig {
+            enabled: true,
+            mcp_default_safety: "read_only".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            parallel_safety_with_mcp(&name, None, Some(&cfg_ro)),
+            ParallelSafety::ReadOnly
+        );
+        // Allowlist entries are compared verbatim against the generated name.
+        let cfg_allow = ParallelToolsConfig {
+            enabled: true,
+            mcp_readonly_allowlist: vec![name.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            parallel_safety_with_mcp(&name, None, Some(&cfg_allow)),
+            ParallelSafety::ReadOnly
         );
     }
 }
