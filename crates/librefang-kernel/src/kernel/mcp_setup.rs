@@ -375,6 +375,40 @@ impl LibreFangKernel {
         extracted
     }
 
+    /// Swap `new` in for every live connection named `name`, atomically with respect to readers of the list.
+    ///
+    /// The old entries are retired inside the same critical section that removes them, and the tool cache is rebuilt from the list as it stands afterwards, so there is no instant at which the server is missing from the list or from `mcp_tools`.
+    /// Returns the removed entries; the caller closes them, which waits for the calls in flight on them.
+    async fn replace_mcp_connection(
+        &self,
+        name: &str,
+        new: Arc<McpConnectionEntry>,
+    ) -> Vec<Arc<McpConnectionEntry>> {
+        let mut conns = self.mcp.mcp_connections.lock().await;
+        let mut replaced = Vec::new();
+        let mut i = 0;
+        while i < conns.len() {
+            if conns[i].name() == name {
+                let old = conns.remove(i);
+                old.retire();
+                replaced.push(old);
+            } else {
+                i += 1;
+            }
+        }
+        conns.push(new);
+        if let Ok(mut tools) = self.mcp.mcp_tools.lock() {
+            tools.clear();
+            for conn in conns.iter() {
+                tools.extend(conn.tools().iter().cloned());
+            }
+        }
+        self.mcp
+            .mcp_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        replaced
+    }
+
     /// Disconnect an MCP server by name, removing it from the live connection list.
     ///
     /// The removed `McpConnection` is closed explicitly before this returns.
@@ -807,10 +841,22 @@ impl LibreFangKernel {
             return Err(McpReconnectError::NeedsAuth { id: id.to_string() });
         }
 
-        // Disconnect the existing connection if any, and close it before dialing the replacement.
-        // Dropping it would only schedule a detached cleanup, so a stdio child holding an exclusive resource (lock file, port, browser profile) could still be alive when the new one starts. (#3800)
-        for conn in self.take_mcp_connections(id).await {
-            conn.close().await;
+        // A stdio child may hold an exclusive resource (lock file, port, browser profile), so the old connection is closed before the replacement is dialed.
+        // Dropping it would only schedule a detached cleanup, and the new child could start while the old one is still alive. (#3800)
+        // Closing waits for the calls in flight on the old connection (up to the server's timeout), and for that long the server is not in the connection list.
+        //
+        // The other transports hold no such resource, so there the old connection keeps serving while the new one is dialed and the two are swapped in one step: no window in which a call finds the server "not connected", and the wait for calls in flight happens after the swap, in the background.
+        // With no transport configured there is nothing to dial, so that case takes the close-first path too.
+        let close_first = !matches!(
+            server_config.transport,
+            Some(McpTransportEntry::Sse { .. })
+                | Some(McpTransportEntry::Http { .. })
+                | Some(McpTransportEntry::HttpCompat { .. })
+        );
+        if close_first {
+            for entry in self.take_mcp_connections(id).await {
+                entry.close().await;
+            }
         }
 
         self.mcp.mcp_health.mark_reconnecting(id);
@@ -862,26 +908,27 @@ impl LibreFangKernel {
         match self.connect_mcp_wired(mcp_config).await {
             Ok(conn) => {
                 let tool_count = conn.tools().len();
-                if let Ok(mut tools) = self.mcp.mcp_tools.lock() {
-                    tools.extend(conn.tools().iter().cloned());
-                    self.mcp
-                        .mcp_generation
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
+                // One critical section: the old entries leave the list (retired) and the new one enters, and the tool cache is rebuilt from the result.
+                let replaced = self
+                    .replace_mcp_connection(
+                        id,
+                        McpConnectionEntry::new(conn, server_config.max_concurrent_calls as usize),
+                    )
+                    .await;
                 self.mcp.mcp_health.report_ok(id, tool_count);
                 info!(
                     server = %id,
                     tools = tool_count,
                     "MCP server reconnected"
                 );
-                self.mcp
-                    .mcp_connections
-                    .lock()
-                    .await
-                    .push(McpConnectionEntry::new(
-                        conn,
-                        server_config.max_concurrent_calls as usize,
-                    ));
+                if !replaced.is_empty() {
+                    // Only reached on the dial-first path (the close-first path took the old entries out already). Waits for the calls in flight, then closes the old transport.
+                    tokio::spawn(async move {
+                        for entry in replaced {
+                            entry.close().await;
+                        }
+                    });
+                }
                 // Cardinality: server label is the operator-configured MCP
                 // server id (bounded set), outcome is one of two fixed
                 // values. (#3495)
@@ -894,6 +941,10 @@ impl LibreFangKernel {
                 Ok(tool_count)
             }
             Err(e) => {
+                // Dial-first path: the old connection was kept while dialing; the dial failed, so it goes the way it always did on a failed reconnect.
+                for entry in self.take_mcp_connections(id).await {
+                    entry.close().await;
+                }
                 self.mcp.mcp_health.report_error(id, e.to_string());
                 metrics::counter!(
                     "librefang_mcp_reconnect_total",
@@ -1154,6 +1205,72 @@ mod prefix_overlap_tests {
             .map(|c| c.name().to_string())
             .collect();
         assert_eq!(remaining, vec!["github-enterprise"]);
+        kernel.shutdown();
+    }
+
+    /// Reconnect while a call is in flight on the old connection.
+    ///
+    /// The old connection must keep serving (stay in the list and in the tool cache) until the new one is up, and the swap must be atomic: with a call in flight, reconnect has to wait for it before it can close the old connection, and that wait must not turn into a window in which the server is "not connected".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_with_a_call_in_flight_leaves_no_window_without_the_server() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let backend = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&backend)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            ..KernelConfig::default()
+        };
+        config
+            .mcp_servers
+            .push(http_compat_server("github", &backend.uri()));
+        let kernel = Arc::new(LibreFangKernel::boot_with_config(config).expect("boot"));
+        kernel.connect_mcp_servers().await;
+
+        let old = Arc::clone(&kernel.mcp.mcp_connections.lock().await[0]);
+        // A call in flight on the old connection: holds a slot until released.
+        let in_flight = old.acquire().await.expect("slot");
+
+        let reconnect = {
+            let kernel = Arc::clone(&kernel);
+            tokio::spawn(async move { kernel.reconnect_mcp_server("github").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        // The reconnect is still waiting for the call in flight...
+        let in_list = kernel.mcp.mcp_connections.lock().await.len();
+        let tools = tool_names(&kernel);
+        // ...and during that wait a new call must still find the server.
+        assert_eq!(
+            in_list, 1,
+            "server left the connection list while reconnect waited for a call in flight"
+        );
+        assert_eq!(
+            tools,
+            vec!["mcp_github_probe"],
+            "server's tools left the cache while reconnect waited for a call in flight"
+        );
+
+        drop(in_flight);
+        tokio::time::timeout(std::time::Duration::from_secs(5), reconnect)
+            .await
+            .expect("reconnect finishes once the call in flight is done")
+            .expect("join")
+            .expect("reconnect");
+
+        let list = kernel.mcp.mcp_connections.lock().await;
+        assert_eq!(list.len(), 1);
+        assert!(!Arc::ptr_eq(&list[0], &old), "the entry was replaced");
+        assert!(old.is_retired(), "the old entry is retired");
+        assert!(!list[0].is_retired());
+        drop(list);
+        assert_eq!(tool_names(&kernel), vec!["mcp_github_probe"]);
         kernel.shutdown();
     }
 }
