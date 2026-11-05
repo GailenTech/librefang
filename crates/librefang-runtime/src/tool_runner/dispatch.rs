@@ -1628,22 +1628,13 @@ async fn dispatch_tool_call(
                                 waited,
                                 entry.max_concurrent_calls(),
                             );
-                            let slot = match acquired {
-                                Ok(slot) => slot,
-                                Err(_) => {
-                                    return ToolResult {
-                                        tool_use_id: tool_use_id.to_string(),
-                                        content: format!(
-                                            "MCP tool call not sent: waited {}s for a free slot on server '{server_name}' ({} concurrent call(s) allowed) and gave up. The server is busy with earlier calls.",
-                                            waited.as_secs(),
-                                            entry.max_concurrent_calls()
-                                        ),
-                                        status: ToolExecutionStatus::Error,
-                                        is_error: true,
-                                        ..Default::default()
-                                    };
-                                }
-                            };
+                            match acquired {
+                                Err(_) => Err(ToolError::upstream_msg(format!(
+                                    "MCP tool call not sent: waited {}s for a free slot on server '{server_name}' ({} concurrent call(s) allowed) and gave up. The server is busy with earlier calls.",
+                                    waited.as_secs(),
+                                    entry.max_concurrent_calls()
+                                ))),
+                                Ok(slot) => {
                             match slot.as_ref().ok().and_then(|s| s.connection()) {
                                 None => Err(ToolError::upstream_msg(format!(
                                     "MCP tool call failed: connection to '{server_name}' was closed while the call was waiting"
@@ -1671,6 +1662,8 @@ async fn dispatch_tool_call(
                                             "MCP tool call failed: {e}"
                                         ))),
                                     }
+                                }
+                            }
                                 }
                             }
                         } else {

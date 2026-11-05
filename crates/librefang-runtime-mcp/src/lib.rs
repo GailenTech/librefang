@@ -2587,7 +2587,15 @@ impl McpConnectionEntry {
         })
     }
 
-    /// Whether [`close`](Self::close) has been called on this entry.
+    /// Mark the entry as no longer the server's current connection, without touching calls in flight or queued.
+    ///
+    /// Synchronous so a caller that swaps a replacement into the connection list can retire the old entry in the same critical section, before any slow [`close`](Self::close) starts.
+    pub fn retire(&self) {
+        self.retired
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the entry was retired (by [`retire`](Self::retire) or [`close`](Self::close)).
     pub fn is_retired(&self) -> bool {
         self.retired.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -2597,8 +2605,7 @@ impl McpConnectionEntry {
     /// Marks the entry retired first, so outcomes of calls already in flight are not attributed to a replacement connection of the same name, and closes the semaphore so callers still queued fail at once instead of waiting their turn on a connection that is going away.
     /// Then waits for the calls in flight (each bounded by its own timeout) before closing the transport underneath them.
     pub async fn close(&self) {
-        self.retired
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.retire();
         self.permits.close();
         let taken = self.conn.write().await.take();
         if let Some(conn) = taken {
