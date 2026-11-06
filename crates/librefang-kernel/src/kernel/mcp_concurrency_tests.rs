@@ -459,6 +459,57 @@ async fn close_first_reconnect_waits_for_the_call_in_flight_and_callers_in_the_g
 
 // ------------------------------------------------------------------------------------------- disconnect
 
+/// Risk: reconnects, disconnects and calls interleaved (health loop, operator, hot reload) deadlock on the connection-ops lock and the list lock, or leave the tool cache out of step with the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconnects_disconnects_and_calls_interleaved_neither_deadlock_nor_desync_the_cache() {
+    let fake = serve_http(Control::new(), false).await;
+    let (kernel, _tmp) = boot(vec![http_server("srv", &fake.url, 2)]).await;
+    let per_server = cached_tools(&kernel);
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for n in 0..6u32 {
+        let kernel = Arc::clone(&kernel);
+        tasks.spawn(async move {
+            for round in 0..4u32 {
+                match (n + round) % 3 {
+                    0 => {
+                        let _ = kernel.reconnect_mcp_server("srv").await;
+                    }
+                    1 => {
+                        let _ = kernel.disconnect_mcp_server("srv").await;
+                    }
+                    _ => {
+                        let id = format!("{n}-{round}");
+                        let r = dispatch(&kernel, "mcp_srv_echo", &id).await;
+                        // Served, or refused because the server is momentarily gone: never anything else.
+                        assert!(
+                            r.content == format!("echo:{id}") || r.is_error,
+                            "unexpected result {:?}",
+                            r.content
+                        );
+                    }
+                }
+            }
+        });
+    }
+    while let Some(done) = within("an interleaved task", tasks.join_next()).await {
+        done.expect("an interleaved task panicked");
+    }
+
+    // Whatever order they ran in, the cache describes exactly the list.
+    let entries = live(&kernel, "srv").await.len();
+    assert!(entries <= 1, "{entries} entries for one server");
+    assert_eq!(cached_tools(&kernel), entries * per_server);
+    // And the server can be brought back.
+    within("final reconnect", kernel.reconnect_mcp_server("srv"))
+        .await
+        .expect("reconnect");
+    assert_eq!(live(&kernel, "srv").await.len(), 1);
+    assert_eq!(cached_tools(&kernel), per_server);
+    kernel.shutdown();
+    fake.stop().await;
+}
+
 /// Risk: removing a server with calls queued behind a slow one. The queued calls must fail instead of waiting their turn, the call in flight must finish, disconnect must wait for it and then return, and the list and the cache must end empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disconnect_with_queued_calls_fails_them_and_waits_for_the_running_one() {

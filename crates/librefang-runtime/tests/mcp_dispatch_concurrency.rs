@@ -143,6 +143,34 @@ async fn a_call_that_cannot_get_a_slot_gives_up_and_was_never_sent() {
     fake.stop().await;
 }
 
+/// Risk: the agent loop's tool timeout drops the dispatch future while the call is on the wire. The slot must come back at once (the next call to the server must not queue behind a call nobody is waiting for), and the guard that excluded the queue time must not outlive the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_timeout_in_the_agent_loop_frees_the_slot() {
+    let ctl = Control::new();
+    let fake = serve_http(Arc::clone(&ctl), false).await;
+    let list: Arc<McpConnectionList> = Arc::new(tokio::sync::Mutex::new(vec![
+        entry_for("srv", &fake.url, 1, 30).await,
+    ]));
+
+    let timed_out = timeout_excluding_waits(
+        Duration::from_millis(300),
+        dispatch(&list, "mcp_srv_gate", "a"),
+    )
+    .await;
+    assert!(timed_out.is_err(), "the gated call cannot have answered");
+    assert_eq!(ctl.arrived(), 1);
+
+    let next = within(
+        "call after the timed-out one",
+        dispatch(&list, "mcp_srv_echo", "b"),
+    )
+    .await;
+    assert!(!next.is_error, "{}", next.content);
+    assert_eq!(next.content, "echo:b");
+    ctl.open("a");
+    fake.stop().await;
+}
+
 /// Risk: reconnect (dial-first transports) swaps a new entry in while a call is queued on the old one. The old entry is then closed, which fails every caller still queued on it, although the server is back and the replacement is in the list.
 /// A call queued across a reconnect should be served by the replacement.
 #[tokio::test]
