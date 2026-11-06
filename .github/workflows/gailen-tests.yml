@@ -134,7 +134,12 @@ jobs:
           # Lo que va tras " -- " son filtros del ejecutable de tests, no de cargo: no cuenta para compilar.
           PRE="${ARGS%% -- *}"
           echo "cargo test $PRE --no-run"
-          cargo test $PRE --no-run --keep-going -j 3 2>&1 | tee build.log
+          if [ "$M_SCOPE" = "workspace" ]; then
+            # --keep-going (que cargo test no tiene) enumera todos los errores de compilacion en una sola pasada; los artefactos son los mismos que los de cargo test --no-run.
+            cargo build --workspace --tests --keep-going -j 3 2>&1 | tee build.log
+          else
+            cargo test $PRE --no-run -j 3 2>&1 | tee build.log
+          fi
       - name: Ejecutar los tests
         run: |
           set -o pipefail
