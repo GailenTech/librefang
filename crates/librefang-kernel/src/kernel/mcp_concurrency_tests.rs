@@ -149,15 +149,16 @@ async fn the_configured_limit_reaches_the_entry_at_boot_and_after_reconnect() {
 // ------------------------------------------------------------------------------------------- reconnect
 
 /// Risk: during a reconnect of a dial-first transport, a reader or a caller finds the server missing, the tool cache emptied or doubled, or a call fails because it grabbed the entry that was just retired.
-/// Readers sample the list and the cache under the list lock; callers go through the real dispatcher; the reconnects run back to back.
+/// Readers sample the list and the cache under the list lock; four callers go through the real dispatcher against a server that allows one call at a time, so there is always a queue when a reconnect swaps the entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reconnecting_under_load_never_exposes_a_gap_or_fails_a_call() {
     let fake = serve_http(Control::new(), false).await;
-    let (kernel, _tmp) = boot(vec![http_server("srv", &fake.url, 4)]).await;
+    let (kernel, _tmp) = boot(vec![http_server("srv", &fake.url, 1)]).await;
     let tools_before = cached_tools(&kernel);
     assert!(tools_before > 0, "the fake server's tools were not cached");
 
     let stop = Arc::new(AtomicBool::new(false));
+    let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut watchers = tokio::task::JoinSet::new();
 
     for _ in 0..2 {
@@ -182,7 +183,11 @@ async fn reconnecting_under_load_never_exposes_a_gap_or_fails_a_call() {
         });
     }
     for c in 0..4 {
-        let (kernel, stop) = (Arc::clone(&kernel), Arc::clone(&stop));
+        let (kernel, stop, completed) = (
+            Arc::clone(&kernel),
+            Arc::clone(&stop),
+            Arc::clone(&completed),
+        );
         watchers.spawn(async move {
             let mut calls = 0u64;
             while !stop.load(Ordering::Relaxed) {
@@ -195,12 +200,21 @@ async fn reconnecting_under_load_never_exposes_a_gap_or_fails_a_call() {
                 );
                 assert_eq!(r.content, format!("echo:{id}"));
                 calls += 1;
+                completed.fetch_add(1, Ordering::Relaxed);
             }
             calls
         });
     }
 
     for i in 0..12 {
+        // Pace the reconnects by the calls themselves: with one slot and four callers there is always a queue, and eight completions mean every caller that was queued at the previous swap has been served.
+        let target = completed.load(Ordering::Relaxed) + 8;
+        within("the callers keep making progress", async {
+            while completed.load(Ordering::Relaxed) < target {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         within(
             &format!("reconnect {i}"),
             kernel.reconnect_mcp_server("srv"),
