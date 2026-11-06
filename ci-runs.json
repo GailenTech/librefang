@@ -1,4 +1,4 @@
 [
-  {"ref": "d95c641e06a1a539b2ff6bdb448b5d17a0f92b0a", "scope": "workspace", "ignored": true, "recursion_fix": "crates/librefang-api/tests/agent_ephemeral_runs_test.rs"},
-  {"ref": "9d1b354e3d86225b1d5668d47b35d5c95c33ea36", "scope": "workspace", "ignored": true}
+  {"ref": "1f2a24d3faa336ff3ebeed791c7592ce3a788d67", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents", "online": true},
+  {"ref": "9d1b354e3d86225b1d5668d47b35d5c95c33ea36", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents", "online": true}
 ]
