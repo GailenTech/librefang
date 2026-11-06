@@ -1,11 +1,4 @@
 [
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp --test mcp_concurrency", "mutant": "m1-close-sin-cerrar-semaforo"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp --test mcp_concurrency", "mutant": "m9-close-sin-retire"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency", "mutant": "m6-despachador-sin-reintento"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m6-despachador-sin-reintento"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m3-reconnect-siempre-cierra-primero"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m4-replace-no-atomico"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m5-replace-sin-retirar"},
-  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m10-disconnect-no-cierra"}
+  {"ref": "d95c641e06a1a539b2ff6bdb448b5d17a0f92b0a", "scope": "custom", "cargo_args": "-p librefang-api --test agent_ephemeral_runs_test"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-api --test agent_ephemeral_runs_test"}
 ]
