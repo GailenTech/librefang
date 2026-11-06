@@ -38,6 +38,7 @@ pub struct Control {
     completed: AtomicUsize,
     cancelled: AtomicUsize,
     allow_exit: AtomicBool,
+    extra_tool: AtomicBool,
 }
 
 impl Control {
@@ -87,6 +88,11 @@ impl Control {
     /// Calls the client cancelled before the server answered.
     pub fn cancelled(&self) -> usize {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Advertise one more tool (`extra`, which behaves like `echo`) to sessions that start from now on.
+    pub fn set_extra_tool(&self, on: bool) {
+        self.extra_tool.store(on, Ordering::SeqCst);
     }
 
     pub fn set_allow_exit(&self) {
@@ -161,7 +167,11 @@ impl ServerHandler for FakeServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        let mut all = tools();
+        if self.ctl.extra_tool.load(Ordering::SeqCst) {
+            all.push(Tool::new("extra", "fake tool", schema()));
+        }
+        Ok(ListToolsResult::with_all_items(all))
     }
 
     async fn call_tool(
@@ -189,6 +199,7 @@ impl ServerHandler for FakeServer {
 
         let out = match &*request.name {
             "echo" => text(format!("echo:{id}")),
+            "extra" if ctl.extra_tool.load(Ordering::SeqCst) => text(format!("echo:{id}")),
             "sleep" => {
                 tokio::time::sleep(Duration::from_millis(ms)).await;
                 text(format!("sleep:{id}"))

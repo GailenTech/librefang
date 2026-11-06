@@ -352,6 +352,50 @@ async fn answers_reach_the_right_callers_over_plain_json() {
     fake.stop().await;
 }
 
+/// Characterisation, not a verdict: what a call abandoned by its caller (tool timeout in the agent loop) does to the calls that come after it.
+/// Over SSE the next call is answered while the abandoned request is still pending. Over plain JSON the client library handles one POST at a time per connection, so the next call waits behind the abandoned request until the server answers it; the semaphore slot is free but the connection is not.
+/// A server that never answers an abandoned request therefore starves a plain-JSON connection even though `max_concurrent_calls` is not exhausted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_abandoned_call_blocks_a_plain_json_connection_but_not_an_sse_one() {
+    for json_response in [false, true] {
+        let ctl = Control::new();
+        let fake = serve_http(Arc::clone(&ctl), json_response).await;
+        let entry = entry_http("srv", &fake, 2, 30).await;
+        {
+            let abandoned = call(&entry, "gate", "a");
+            tokio::pin!(abandoned);
+            tokio::select! {
+                r = &mut abandoned => panic!("the gated call answered by itself: {r:?}"),
+                _ = within("the abandoned call reaches the server", ctl.wait_arrived(1)) => {}
+            }
+        }
+        let next =
+            tokio::time::timeout(Duration::from_millis(700), call(&entry, "echo", "b")).await;
+        if json_response {
+            assert!(
+                next.is_err(),
+                "plain JSON: the next call was answered while an abandoned request was pending: {next:?}"
+            );
+        } else {
+            assert_eq!(
+                next.expect("SSE: the next call waited behind the abandoned one"),
+                Ok("echo:b".to_string())
+            );
+        }
+        // Whatever the transport, once the server answers the abandoned request everything flows again.
+        ctl.open("a");
+        assert_eq!(
+            within(
+                "call after releasing the abandoned request",
+                call(&entry, "echo", "c")
+            )
+            .await,
+            Ok("echo:c".to_string())
+        );
+        fake.stop().await;
+    }
+}
+
 /// Risk: a tool-level error is mistaken for a transport failure (which would tear down a healthy server) or leaves the slot taken.
 #[tokio::test]
 async fn a_tool_error_is_an_application_error_and_leaves_the_server_usable() {
@@ -546,12 +590,12 @@ async fn stress_once(seed: u64) {
                         }
                     },
                     5 => {
-                        // Abandon a call that can never finish (nobody opens the gate).
+                        // Abandon a call that is still running on the server. It does finish by itself after a while: over plain JSON the client library keeps the connection busy with an abandoned request until the server answers it, so one that never finished would starve every later call on that server (see `an_abandoned_call_blocks_a_plain_json_connection_but_not_an_sse_one`).
                         let budget = Duration::from_millis(1 + rng.below(15));
-                        if let Ok(Err(e)) =
-                            tokio::time::timeout(budget, call(&entry, "gate", &id)).await
-                        {
-                            assert_eq!(e, "closed", "seed {seed}: unexpected error {e}");
+                        let running =
+                            call_raw(&entry, "sleep", json!({"id": id, "ms": 40 + rng.below(80)}));
+                        if let Ok(Err(e)) = tokio::time::timeout(budget, running).await {
+                            assert_eq!(e.message(), "closed", "seed {seed}: unexpected error {e}");
                         }
                         abandoned += 1;
                     }

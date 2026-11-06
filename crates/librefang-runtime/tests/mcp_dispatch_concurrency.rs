@@ -99,21 +99,15 @@ async fn dispatch(list: &McpConnectionList, tool: &str, id: &str) -> ToolResult 
 // ------------------------------------------------------------------------------------------- dispatcher
 
 /// Risk: a call queued behind a busy slot waits forever, or fails with a message that says the tool failed when it was never sent.
-/// With the server's `timeout_secs` at 1 the queued call must give up after about a second, say it was not sent, and never reach the server; the call that holds the slot must be unaffected.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// The slot is held directly by the test (not by a running call, which would end on its own `timeout_secs` at about the same moment the queued call gives up): with the server's `timeout_secs` at 1 the queued call must give up after about a second, say it was not sent, and never reach the server. Once the slot is free the same call works.
+#[tokio::test]
 async fn a_call_that_cannot_get_a_slot_gives_up_and_was_never_sent() {
     let ctl = Control::new();
     let fake = serve_http(Arc::clone(&ctl), false).await;
-    let list: Arc<McpConnectionList> = Arc::new(tokio::sync::Mutex::new(vec![
-        entry_for("srv", &fake.url, 1, 1).await,
-    ]));
+    let entry = entry_for("srv", &fake.url, 1, 1).await;
+    let list: Arc<McpConnectionList> = Arc::new(tokio::sync::Mutex::new(vec![Arc::clone(&entry)]));
 
-    let holder = {
-        let list = Arc::clone(&list);
-        tokio::spawn(async move { dispatch(&list, "mcp_srv_gate", "a").await })
-    };
-    within("holder reaches the server", ctl.wait_arrived(1)).await;
-
+    let held = entry.acquire().await.expect("the only slot");
     let started = std::time::Instant::now();
     let queued = within("queued call", dispatch(&list, "mcp_srv_echo", "b")).await;
     let waited = started.elapsed();
@@ -136,16 +130,16 @@ async fn a_call_that_cannot_get_a_slot_gives_up_and_was_never_sent() {
         waited < Duration::from_secs(10),
         "gave up too late: {waited:?}"
     );
-    assert_eq!(ctl.arrived(), 1, "the abandoned call reached the server");
+    assert_eq!(ctl.arrived(), 0, "the abandoned call reached the server");
 
-    ctl.open("a");
-    let held = within("holder", holder).await.unwrap();
-    assert!(
-        !held.is_error,
-        "the call holding the slot was disturbed: {}",
-        held.content
-    );
-    assert_eq!(held.content, "gate:a");
+    drop(held);
+    let ok = within(
+        "call once the slot is free",
+        dispatch(&list, "mcp_srv_echo", "c"),
+    )
+    .await;
+    assert!(!ok.is_error, "{}", ok.content);
+    assert_eq!(ok.content, "echo:c");
     fake.stop().await;
 }
 

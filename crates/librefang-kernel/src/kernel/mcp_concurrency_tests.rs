@@ -269,6 +269,48 @@ async fn a_call_in_flight_finishes_on_the_old_connection_while_the_new_one_serve
     fake.stop().await;
 }
 
+/// Risk: stale reads. The entry copies `name` and `tools` at construction; after a reconnect to a server whose tool set changed, the cache and the generation counter must show the new set, and a tool that disappeared must stop being callable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_picks_up_a_changed_tool_set_and_bumps_the_generation() {
+    let ctl = Control::new();
+    let fake = serve_http(Arc::clone(&ctl), false).await;
+    let (kernel, _tmp) = boot(vec![http_server("srv", &fake.url, 2)]).await;
+    let before = cached_tools(&kernel);
+    let generation = || kernel.mcp.mcp_generation.load(Ordering::Relaxed);
+    let gen_before = generation();
+
+    ctl.set_extra_tool(true);
+    within(
+        "reconnect with a new tool",
+        kernel.reconnect_mcp_server("srv"),
+    )
+    .await
+    .expect("reconnect");
+    assert_eq!(cached_tools(&kernel), before + 1);
+    assert!(
+        generation() > gen_before,
+        "the generation counter did not move"
+    );
+    let r = dispatch(&kernel, "mcp_srv_extra", "e").await;
+    assert_eq!(r.content, "echo:e");
+
+    let gen_mid = generation();
+    ctl.set_extra_tool(false);
+    within("reconnect without it", kernel.reconnect_mcp_server("srv"))
+        .await
+        .expect("reconnect");
+    assert_eq!(cached_tools(&kernel), before);
+    assert!(generation() > gen_mid);
+    let r = dispatch(&kernel, "mcp_srv_extra", "e").await;
+    assert!(
+        r.is_error,
+        "a tool the server no longer offers was still callable: {}",
+        r.content
+    );
+    kernel.shutdown();
+    fake.stop().await;
+}
+
 /// Risk: several reconnects of the same server at once (health loop plus an operator click) leave two live entries, a doubled tool cache, or deadlock on the connection-ops lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reconnects_leave_exactly_one_live_entry() {
