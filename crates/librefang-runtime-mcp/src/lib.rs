@@ -2539,9 +2539,11 @@ impl McpCallSlot<'_> {
 impl McpConnectionEntry {
     /// Wrap a freshly connected `conn` for storage in an [`McpConnectionList`].
     ///
-    /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1.
+    /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1 and anything above what a semaphore can hold is clamped to that.
     pub fn new(conn: McpConnection, max_concurrent_calls: usize) -> Arc<Self> {
-        let max_concurrent_calls = max_concurrent_calls.max(1);
+        // `Semaphore::new` panics above `MAX_PERMITS`; a value that large means "no limit" anyway.
+        let max_concurrent_calls =
+            max_concurrent_calls.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
         let timeout_secs = conn.config.timeout_secs;
         Arc::new(Self {
             name: conn.name().to_string(),
