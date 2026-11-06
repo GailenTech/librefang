@@ -4,8 +4,13 @@ name: Gailen — suite de tests
 # Perfil de test (dev), no el release con lto=fat. Se lanza a mano:
 #   gh workflow run gailen-tests.yml --ref gailen/ci-tests -f ref=<rama o SHA>
 # Para separar fallos previos de fallos del parche se lanza dos veces: con la base (1f2a24d3f) y con la rama del parche.
+# GitHub solo deja lanzar workflow_dispatch si el fichero esta en la rama por defecto, y no queremos tocar la main del fork:
+# por eso tambien arranca con cada push a gailen/ci-tests, leyendo las ejecuciones de ci-runs.json (una entrada = un trabajo de la matriz).
 # Con "mutant" se aplica antes de compilar mutantes/<nombre>.patch (de esta rama) al ref probado, para comprobar que un test falla cuando el defecto existe.
 on:
+  push:
+    branches: [gailen/ci-tests]
+    paths: [ci-runs.json, .github/workflows/gailen-tests.yml, mutantes/**]
   workflow_dispatch:
     inputs:
       ref:
@@ -40,21 +45,55 @@ env:
   LIBREFANG_REGISTRY_OFFLINE: "1"
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: m
+        env:
+          EVENT: ${{ github.event_name }}
+          I_REF: ${{ inputs.ref }}
+          I_SCOPE: ${{ inputs.scope }}
+          I_ARGS: ${{ inputs.cargo_args }}
+          I_IGNORED: ${{ inputs.ignored }}
+          I_MUTANT: ${{ inputs.mutant }}
+          I_RUNNER: ${{ inputs.runner }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            M=$(jq -nc --arg ref "$I_REF" --arg scope "$I_SCOPE" --arg args "$I_ARGS" --arg ignored "$I_IGNORED" --arg mutant "$I_MUTANT" --arg runner "$I_RUNNER" \
+              '{include:[{ref:$ref,scope:$scope,cargo_args:$args,ignored:($ignored=="true"),mutant:$mutant,runner:$runner}]}')
+          else
+            M=$(jq -c '{include: map({ref, scope: (.scope // "workspace"), cargo_args: (.cargo_args // ""), ignored: (.ignored // false), mutant: (.mutant // ""), runner: (.runner // "ubuntu-24.04-arm")})}' ci-runs.json)
+          fi
+          echo "$M"
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
   tests:
-    name: cargo test (${{ inputs.scope }}) @ ${{ inputs.ref }} ${{ inputs.mutant }}
-    runs-on: ${{ inputs.runner }}
+    needs: plan
+    name: ${{ matrix.scope }} @ ${{ matrix.ref }} ${{ matrix.mutant }} ${{ matrix.cargo_args }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      M_REF: ${{ matrix.ref }}
+      M_SCOPE: ${{ matrix.scope }}
+      M_ARGS: ${{ matrix.cargo_args }}
+      M_MUTANT: ${{ matrix.mutant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ matrix.ref }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: .gailen-ci
       - name: Parche de mutante
-        if: inputs.mutant != ''
+        if: matrix.mutant != ''
         run: |
-          git apply --verbose ".gailen-ci/mutantes/${{ inputs.mutant }}.patch"
+          git apply --verbose ".gailen-ci/mutantes/${M_MUTANT}.patch"
           git diff --stat
       - name: Liberar disco
         run: |
@@ -82,7 +121,7 @@ jobs:
       - name: Compilar los tests
         run: |
           set -o pipefail
-          if [ "${{ inputs.scope }}" = "workspace" ]; then ARGS="--workspace"; else ARGS="${{ inputs.cargo_args }}"; fi
+          if [ "$M_SCOPE" = "workspace" ]; then ARGS="--workspace"; else ARGS="$M_ARGS"; fi
           # Lo que va tras " -- " son filtros del ejecutable de tests, no de cargo: no cuenta para compilar.
           PRE="${ARGS%% -- *}"
           echo "cargo test $PRE --no-run"
@@ -90,10 +129,10 @@ jobs:
       - name: Ejecutar los tests
         run: |
           set -o pipefail
-          if [ "${{ inputs.scope }}" = "workspace" ]; then ARGS="--workspace"; else ARGS="${{ inputs.cargo_args }}"; fi
+          if [ "$M_SCOPE" = "workspace" ]; then ARGS="--workspace"; else ARGS="$M_ARGS"; fi
           cargo test $ARGS --no-fail-fast 2>&1 | tee test.log
       - name: Test ignorado de kernel-ignored-tests.yml
-        if: always() && inputs.ignored && inputs.scope == 'workspace'
+        if: always() && matrix.ignored && matrix.scope == 'workspace'
         run: |
           set -o pipefail
           cargo test -p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents 2>&1 | tee ignored.log
@@ -101,7 +140,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## ref \`${{ inputs.ref }}\` ($(git rev-parse --short HEAD)) mutante \`${{ inputs.mutant }}\`"
+            echo "## ref \`$M_REF\` ($(git rev-parse --short HEAD)) mutante \`$M_MUTANT\` $M_SCOPE $M_ARGS"
             echo
             echo "### Resultados por binario de test"
             echo '```'
@@ -117,7 +156,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: logs-${{ github.run_id }}
+          name: logs-${{ github.run_id }}-${{ strategy.job-index }}
           path: |
             build.log
             test.log
