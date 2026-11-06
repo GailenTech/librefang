@@ -1,0 +1,123 @@
+name: Gailen — suite de tests
+
+# Ejecuta la suite del workspace (y los tests #[ignore] que ejecuta kernel-ignored-tests.yml de upstream) sobre cualquier ref del fork.
+# Perfil de test (dev), no el release con lto=fat. Se lanza a mano:
+#   gh workflow run gailen-tests.yml --ref gailen/ci-tests -f ref=<rama o SHA>
+# Para separar fallos previos de fallos del parche se lanza dos veces: con la base (1f2a24d3f) y con la rama del parche.
+# Con "mutant" se aplica antes de compilar mutantes/<nombre>.patch (de esta rama) al ref probado, para comprobar que un test falla cuando el defecto existe.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Rama, etiqueta o SHA del fork a probar
+        required: true
+        default: gailen/mcp-concurrencia-tests
+      scope:
+        description: workspace = cargo test --workspace; custom = los argumentos de cargo_args
+        type: choice
+        options: [workspace, custom]
+        default: workspace
+      cargo_args:
+        description: Con scope=custom, argumentos de cargo test (p. ej. "-p librefang-runtime-mcp")
+        default: ""
+      ignored:
+        description: Ejecutar tambien el test #[ignore] de kernel-ignored-tests.yml
+        type: boolean
+        default: true
+      mutant:
+        description: Nombre (sin .patch) de un parche de mutantes/ que se aplica antes de compilar
+        default: ""
+      runner:
+        description: Runner
+        default: ubuntu-24.04-arm
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  LIBREFANG_REGISTRY_OFFLINE: "1"
+
+jobs:
+  tests:
+    name: cargo test (${{ inputs.scope }}) @ ${{ inputs.ref }} ${{ inputs.mutant }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .gailen-ci
+      - name: Parche de mutante
+        if: inputs.mutant != ''
+        run: |
+          git apply --verbose ".gailen-ci/mutantes/${{ inputs.mutant }}.patch"
+          git diff --stat
+      - name: Liberar disco
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /gailen-swap
+          sudo chmod 600 /gailen-swap && sudo mkswap /gailen-swap >/dev/null && sudo swapon /gailen-swap
+          free -h
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        with:
+          shared-key: gailen-tests-${{ runner.arch }}
+          workspaces: ". -> target"
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libdbus-1-dev libsecret-1-dev pkg-config
+      - name: Directorio del dashboard
+        run: mkdir -p crates/librefang-api/static/react
+      - name: Compilar los tests
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.scope }}" = "workspace" ]; then ARGS="--workspace"; else ARGS="${{ inputs.cargo_args }}"; fi
+          echo "cargo test $ARGS --no-run"
+          cargo test $ARGS --no-run -j 3 2>&1 | tee build.log
+      - name: Ejecutar los tests
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.scope }}" = "workspace" ]; then ARGS="--workspace"; else ARGS="${{ inputs.cargo_args }}"; fi
+          cargo test $ARGS --no-fail-fast 2>&1 | tee test.log
+      - name: Test ignorado de kernel-ignored-tests.yml
+        if: always() && inputs.ignored && inputs.scope == 'workspace'
+        run: |
+          set -o pipefail
+          cargo test -p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents 2>&1 | tee ignored.log
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "## ref \`${{ inputs.ref }}\` ($(git rev-parse --short HEAD)) mutante \`${{ inputs.mutant }}\`"
+            echo
+            echo "### Resultados por binario de test"
+            echo '```'
+            grep -E '^test result:' test.log 2>/dev/null | sort | uniq -c || true
+            echo '```'
+            echo "### Tests fallidos"
+            echo '```'
+            grep -E '^test .* FAILED$' test.log ignored.log 2>/dev/null | sort -u || true
+            grep -E '^error: (test failed|could not compile)' build.log test.log ignored.log 2>/dev/null | sort -u || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Registros
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: logs-${{ github.run_id }}
+          path: |
+            build.log
+            test.log
+            ignored.log
+          if-no-files-found: ignore
