@@ -1,4 +1,4 @@
 [
-  {"ref": "1f2a24d3faa336ff3ebeed791c7592ce3a788d67", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents", "online": true},
-  {"ref": "9d1b354e3d86225b1d5668d47b35d5c95c33ea36", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- --ignored hand_runtime_override_survives_restart_via_start_background_agents", "online": true}
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency"},
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"}
 ]
