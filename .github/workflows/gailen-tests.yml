@@ -35,6 +35,9 @@ on:
       runner:
         description: Runner
         default: ubuntu-24.04-arm
+      recursion_fix:
+        description: Ficheros (separados por espacios) a los que se antepone #![recursion_limit = "256"] antes de compilar; solo para poder construir la suite
+        default: ""
 
 permissions:
   contents: read
@@ -60,12 +63,13 @@ jobs:
           I_IGNORED: ${{ inputs.ignored }}
           I_MUTANT: ${{ inputs.mutant }}
           I_RUNNER: ${{ inputs.runner }}
+          I_RECFIX: ${{ inputs.recursion_fix }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            M=$(jq -nc --arg ref "$I_REF" --arg scope "$I_SCOPE" --arg args "$I_ARGS" --arg ignored "$I_IGNORED" --arg mutant "$I_MUTANT" --arg runner "$I_RUNNER" \
-              '{include:[{ref:$ref,scope:$scope,cargo_args:$args,ignored:($ignored=="true"),mutant:$mutant,runner:$runner}]}')
+            M=$(jq -nc --arg ref "$I_REF" --arg scope "$I_SCOPE" --arg args "$I_ARGS" --arg ignored "$I_IGNORED" --arg mutant "$I_MUTANT" --arg runner "$I_RUNNER" --arg recfix "$I_RECFIX" \
+              '{include:[{ref:$ref,scope:$scope,cargo_args:$args,ignored:($ignored=="true"),mutant:$mutant,runner:$runner,recursion_fix:$recfix}]}')
           else
-            M=$(jq -c '{include: map({ref, scope: (.scope // "workspace"), cargo_args: (.cargo_args // ""), ignored: (.ignored // false), mutant: (.mutant // ""), runner: (.runner // "ubuntu-24.04-arm")})}' ci-runs.json)
+            M=$(jq -c '{include: map({ref, scope: (.scope // "workspace"), cargo_args: (.cargo_args // ""), ignored: (.ignored // false), mutant: (.mutant // ""), runner: (.runner // "ubuntu-24.04-arm"), recursion_fix: (.recursion_fix // "")})}' ci-runs.json)
           fi
           echo "$M"
           echo "matrix=$M" >> "$GITHUB_OUTPUT"
@@ -83,6 +87,7 @@ jobs:
       M_SCOPE: ${{ matrix.scope }}
       M_ARGS: ${{ matrix.cargo_args }}
       M_MUTANT: ${{ matrix.mutant }}
+      M_RECFIX: ${{ matrix.recursion_fix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -95,6 +100,10 @@ jobs:
         run: |
           git apply --verbose ".gailen-ci/mutantes/${M_MUTANT}.patch"
           git diff --stat
+      - name: Limite de recursion (solo para poder compilar la suite)
+        if: matrix.recursion_fix != ''
+        run: |
+          for f in $M_RECFIX; do sed -i '1i #![recursion_limit = "256"]' "$f"; head -3 "$f"; done
       - name: Liberar disco
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
@@ -125,7 +134,7 @@ jobs:
           # Lo que va tras " -- " son filtros del ejecutable de tests, no de cargo: no cuenta para compilar.
           PRE="${ARGS%% -- *}"
           echo "cargo test $PRE --no-run"
-          cargo test $PRE --no-run -j 3 2>&1 | tee build.log
+          cargo test $PRE --no-run --keep-going -j 3 2>&1 | tee build.log
       - name: Ejecutar los tests
         run: |
           set -o pipefail
