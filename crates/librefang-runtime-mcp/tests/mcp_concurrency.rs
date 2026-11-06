@@ -418,6 +418,7 @@ async fn a_tool_error_is_an_application_error_and_leaves_the_server_usable() {
 // ------------------------------------------------------------------------------------------- stdio
 
 fn stdio_server() -> PathBuf {
+    static BUILD: std::sync::Once = std::sync::Once::new();
     let mut p = std::env::current_exe().expect("current exe");
     p.pop();
     if p.ends_with("deps") {
@@ -428,11 +429,24 @@ fn stdio_server() -> PathBuf {
     } else {
         "fake_mcp_stdio"
     });
-    assert!(
-        exe.exists(),
-        "{} is missing: run these tests with plain `cargo test -p librefang-runtime-mcp` so the example is built",
-        exe.display()
-    );
+    // `cargo test -p librefang-runtime-mcp` builds the example next to the test binaries, but `--test mcp_concurrency` and nextest build only the test targets: build it on demand then.
+    BUILD.call_once(|| {
+        if !exe.exists() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let status = std::process::Command::new(cargo)
+                .args([
+                    "build",
+                    "-p",
+                    "librefang-runtime-mcp",
+                    "--example",
+                    "fake_mcp_stdio",
+                ])
+                .status()
+                .expect("run cargo to build the stdio fake");
+            assert!(status.success(), "building the stdio fake failed");
+        }
+    });
+    assert!(exe.exists(), "{} is missing", exe.display());
     exe
 }
 
