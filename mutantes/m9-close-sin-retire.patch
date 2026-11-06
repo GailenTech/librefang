@@ -1,0 +1,12 @@
+diff --git a/crates/librefang-runtime-mcp/src/lib.rs b/crates/librefang-runtime-mcp/src/lib.rs
+index de220c750..32cc5888f 100644
+--- a/crates/librefang-runtime-mcp/src/lib.rs
++++ b/crates/librefang-runtime-mcp/src/lib.rs
+@@ -2605,7 +2605,6 @@ impl McpConnectionEntry {
+     /// Marks the entry retired first, so outcomes of calls already in flight are not attributed to a replacement connection of the same name, and closes the semaphore so callers still queued fail at once instead of waiting their turn on a connection that is going away.
+     /// Then waits for the calls in flight (each bounded by its own timeout) before closing the transport underneath them.
+     pub async fn close(&self) {
+-        self.retire();
+         self.permits.close();
+         let taken = self.conn.write().await.take();
+         if let Some(conn) = taken {

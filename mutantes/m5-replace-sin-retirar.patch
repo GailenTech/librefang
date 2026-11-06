@@ -1,0 +1,12 @@
+diff --git a/crates/librefang-kernel/src/kernel/mcp_setup.rs b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+index 94ea2ceba..f3b8518af 100644
+--- a/crates/librefang-kernel/src/kernel/mcp_setup.rs
++++ b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+@@ -390,7 +390,6 @@ impl LibreFangKernel {
+         while i < conns.len() {
+             if conns[i].name() == name {
+                 let old = conns.remove(i);
+-                old.retire();
+                 replaced.push(old);
+             } else {
+                 i += 1;

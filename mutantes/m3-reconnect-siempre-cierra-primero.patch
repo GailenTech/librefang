@@ -1,0 +1,13 @@
+diff --git a/crates/librefang-kernel/src/kernel/mcp_setup.rs b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+index 94ea2ceba..30ac8b68e 100644
+--- a/crates/librefang-kernel/src/kernel/mcp_setup.rs
++++ b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+@@ -847,7 +847,7 @@ impl LibreFangKernel {
+         //
+         // The other transports hold no such resource, so there the old connection keeps serving while the new one is dialed and the two are swapped in one step: no window in which a call finds the server "not connected", and the wait for calls in flight happens after the swap, in the background.
+         // With no transport configured there is nothing to dial, so that case takes the close-first path too.
+-        let close_first = !matches!(
++        let close_first = true || !matches!(
+             server_config.transport,
+             Some(McpTransportEntry::Sse { .. })
+                 | Some(McpTransportEntry::Http { .. })

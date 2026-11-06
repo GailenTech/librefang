@@ -1,0 +1,14 @@
+diff --git a/crates/librefang-kernel/src/kernel/mcp_setup.rs b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+index 94ea2ceba..75e1a9c3b 100644
+--- a/crates/librefang-kernel/src/kernel/mcp_setup.rs
++++ b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+@@ -396,6 +396,9 @@ impl LibreFangKernel {
+                 i += 1;
+             }
+         }
++        drop(conns);
++        tokio::task::yield_now().await;
++        let mut conns = self.mcp.mcp_connections.lock().await;
+         conns.push(new);
+         if let Ok(mut tools) = self.mcp.mcp_tools.lock() {
+             tools.clear();

@@ -1,0 +1,15 @@
+diff --git a/crates/librefang-kernel/src/kernel/mcp_setup.rs b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+index 94ea2ceba..cda833699 100644
+--- a/crates/librefang-kernel/src/kernel/mcp_setup.rs
++++ b/crates/librefang-kernel/src/kernel/mcp_setup.rs
+@@ -426,9 +426,7 @@ impl LibreFangKernel {
+             // Close each extracted connection after releasing the lock.
+             // For stdio connections this waits for the rmcp service task to
+             // finish and the child process to be killed. (#3800)
+-            for conn in removed_conns {
+-                conn.close().await;
+-            }
++            drop(removed_conns);
+         }
+         removed
+     }

@@ -1,0 +1,12 @@
+diff --git a/crates/librefang-runtime-mcp/src/lib.rs b/crates/librefang-runtime-mcp/src/lib.rs
+index de220c750..da38115c9 100644
+--- a/crates/librefang-runtime-mcp/src/lib.rs
++++ b/crates/librefang-runtime-mcp/src/lib.rs
+@@ -2606,7 +2606,6 @@ impl McpConnectionEntry {
+     /// Then waits for the calls in flight (each bounded by its own timeout) before closing the transport underneath them.
+     pub async fn close(&self) {
+         self.retire();
+-        self.permits.close();
+         let taken = self.conn.write().await.take();
+         if let Some(conn) = taken {
+             conn.close().await;

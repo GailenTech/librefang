@@ -1,5 +1,11 @@
 [
-  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp"},
-  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency --test mcp_transport_health_report"},
-  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime --lib -- tool_wait tool_classifier"}
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp --test mcp_concurrency", "mutant": "m1-close-sin-cerrar-semaforo"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp --test mcp_concurrency", "mutant": "m9-close-sin-retire"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency", "mutant": "m6-despachador-sin-reintento"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m6-despachador-sin-reintento"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m3-reconnect-siempre-cierra-primero"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m4-replace-no-atomico"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m5-replace-sin-retirar"},
+  {"ref": "b49ccee672d5ea20cf46a28985d28579f0afcc01", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests", "mutant": "m10-disconnect-no-cierra"}
 ]
