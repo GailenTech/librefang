@@ -1114,9 +1114,11 @@ pub(super) async fn execute_single_tool_call_core(
     let trace_start = Instant::now();
     let trace_timestamp = chrono::Utc::now();
     // Time spent queued for a free slot on an MCP server is not charged to `tool_timeout`: see `tool_wait`.
+    // Boxed: `timeout_excluding_waits` wraps the future in a task-local scope, a select and a pin, and with the whole tool-execution future inline that was enough to push the compiler's layout query past its recursion limit when a test (`agent_ephemeral_runs_test`) drives an agent turn end to end.
+    // One allocation per tool call, which is nothing next to the call itself.
     let result = match crate::tool_wait::timeout_excluding_waits(
         Duration::from_secs(tool_timeout),
-        tool_runner::execute_tool_with_sender_account(
+        Box::pin(tool_runner::execute_tool_with_sender_account(
             &tool_call.id,
             &tool_call.name,
             &tool_call.input,
@@ -1162,7 +1164,7 @@ pub(super) async fn execute_single_tool_call_core(
             // #7744: the principal the turn acts for, so `workflow_create` /
             // `cron_create` can stamp an owner on what they persist.
             ctx.opts.acting_principal,
-        ),
+        )),
     )
     .await
     {
