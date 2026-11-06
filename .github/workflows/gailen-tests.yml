@@ -83,8 +83,10 @@ jobs:
         run: |
           set -o pipefail
           if [ "${{ inputs.scope }}" = "workspace" ]; then ARGS="--workspace"; else ARGS="${{ inputs.cargo_args }}"; fi
-          echo "cargo test $ARGS --no-run"
-          cargo test $ARGS --no-run -j 3 2>&1 | tee build.log
+          # Lo que va tras " -- " son filtros del ejecutable de tests, no de cargo: no cuenta para compilar.
+          PRE="${ARGS%% -- *}"
+          echo "cargo test $PRE --no-run"
+          cargo test $PRE --no-run -j 3 2>&1 | tee build.log
       - name: Ejecutar los tests
         run: |
           set -o pipefail
