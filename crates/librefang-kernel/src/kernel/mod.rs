@@ -2542,3 +2542,6 @@ impl librefang_wire::peer::PeerHandle for LibreFangKernel {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mcp_concurrency_tests;

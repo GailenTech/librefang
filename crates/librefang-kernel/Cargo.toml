@@ -88,6 +88,10 @@ tracing-subscriber = { workspace = true }
 librefang-testing = { path = "../librefang-testing" }
 librefang-kernel-handle = { path = "../librefang-kernel-handle" }
 wiremock = "0.6"
+# In-process fake MCP server for src/kernel/mcp_concurrency_tests.rs (shares librefang-runtime-mcp/tests/support/fake_mcp.rs).
+rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
+axum = { workspace = true }
+tokio-util = { workspace = true }
 
 [lints]
 workspace = true

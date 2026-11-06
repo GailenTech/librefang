@@ -30,6 +30,10 @@ arc-swap = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6"
+# In-process fake MCP server for the concurrency tests (tests/support/fake_mcp.rs, examples/fake_mcp_stdio.rs).
+rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
+axum = { workspace = true }
+tokio-util = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 opentelemetry_sdk = { workspace = true }
 tracing-opentelemetry = { workspace = true }
