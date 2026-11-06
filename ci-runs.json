@@ -1,5 +1,5 @@
 [
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp"},
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency"},
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"}
+  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp"},
+  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency --test mcp_transport_health_report"},
+  {"ref": "d51e38ba24f3bcc54ad4824a1db4e2b170db440d", "scope": "custom", "cargo_args": "-p librefang-runtime --lib -- tool_wait tool_classifier"}
 ]
