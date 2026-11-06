@@ -130,7 +130,10 @@ jobs:
         run: |
           set -o pipefail
           if [ "$M_SCOPE" = "workspace" ]; then ARGS="--workspace"; else ARGS="$M_ARGS"; fi
-          cargo test $ARGS --no-fail-fast 2>&1 | tee test.log
+          PRE="${ARGS%% -- *}"
+          POST=""
+          case "$ARGS" in *" -- "*) POST="${ARGS#* -- }" ;; esac
+          cargo test $PRE --no-fail-fast -- $POST 2>&1 | tee test.log
       - name: Test ignorado de kernel-ignored-tests.yml
         if: always() && matrix.ignored && matrix.scope == 'workspace'
         run: |

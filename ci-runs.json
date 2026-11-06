@@ -1,5 +1,4 @@
 [
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp"},
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency"},
-  {"ref": "gailen/mcp-concurrencia-tests", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"}
+  {"ref": "1f2a24d3f", "scope": "workspace", "ignored": true},
+  {"ref": "gailen/mcp-concurrencia", "scope": "workspace", "ignored": true}
 ]
