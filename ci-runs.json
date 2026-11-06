@@ -1,4 +1,8 @@
 [
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp"},
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-runtime-mcp --tests --examples"},
   {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency"},
-  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"}
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-runtime --test mcp_dispatch_concurrency -- --test-threads=1"},
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests"},
+  {"ref": "23fbabb30335098763ac7cab5befdf22286aea26", "scope": "custom", "cargo_args": "-p librefang-kernel --lib -- mcp_concurrency_tests --test-threads=1"}
 ]
