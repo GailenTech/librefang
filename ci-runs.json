@@ -1,50 +1,6 @@
 [
  {
-  "ref": "d95c641e06a1a539b2ff6bdb448b5d17a0f92b0a",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test",
-  "recursion_fix": "crates/librefang-api/tests/agent_ephemeral_runs_test.rs crates/librefang-api/tests/provider_budget_gate_test.rs"
- },
- {
-  "ref": "d95c641e06a1a539b2ff6bdb448b5d17a0f92b0a",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test",
-  "recursion_fix": "crates/librefang-api/tests/agent_ephemeral_runs_test.rs crates/librefang-api/tests/provider_budget_gate_test.rs"
- },
- {
-  "ref": "d95c641e06a1a539b2ff6bdb448b5d17a0f92b0a",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test",
-  "recursion_fix": "crates/librefang-api/tests/agent_ephemeral_runs_test.rs crates/librefang-api/tests/provider_budget_gate_test.rs"
- },
- {
-  "ref": "1f2a24d3faa336ff3ebeed791c7592ce3a788d67",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
- },
- {
-  "ref": "1f2a24d3faa336ff3ebeed791c7592ce3a788d67",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
- },
- {
-  "ref": "1f2a24d3faa336ff3ebeed791c7592ce3a788d67",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
- },
- {
-  "ref": "6c58fd89c57252ce738fd2e4c9c7eade701999a0",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
- },
- {
-  "ref": "6c58fd89c57252ce738fd2e4c9c7eade701999a0",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
- },
- {
-  "ref": "6c58fd89c57252ce738fd2e4c9c7eade701999a0",
-  "scope": "custom",
-  "cargo_args": "-p librefang-api --test api_integration_test"
+  "ref": "4a12ca59e",
+  "scope": "workspace"
  }
 ]
