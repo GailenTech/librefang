@@ -2174,27 +2174,25 @@ async fn call_on_mcp_entry(
     input: &serde_json::Value,
     caller_ctx: Option<&mcp::CallerContext>,
 ) -> McpEntryCall {
-    // Queueing for a slot is not the tool running: it is excluded from the agent loop's `tool_timeout_secs` (see `tool_wait`) and bounded here by the server's own `timeout_secs` instead, with an error that says the call was never sent.
+    // Queueing for a slot is not the tool running: it is excluded from the agent loop's `tool_timeout_secs` (see `tool_wait`).
+    // The wait is bounded by a limit that grows with the calls ahead (`queue_wait_limit`): every call holding a slot ends within the server's `timeout_secs` and the queue is FIFO, so only a server that stops finishing calls can exhaust it. The error says the call was never sent.
     let wait_guard = crate::tool_wait::begin_wait();
     let wait_started = std::time::Instant::now();
-    let acquired = tokio::time::timeout(
-        std::time::Duration::from_secs(entry.timeout_secs()),
-        entry.acquire(),
-    )
-    .await;
+    let acquired = entry.acquire_bounded().await;
     drop(wait_guard);
     let waited = wait_started.elapsed();
     record_mcp_slot_wait(server_name, tool, waited, entry.max_concurrent_calls());
     let slot = match acquired {
-        Err(_) => {
+        Err(mcp::McpAcquireError::TimedOut { limit }) => {
             return McpEntryCall::Finished(Err(ToolError::upstream_msg(format!(
-                "MCP tool call not sent: waited {}s for a free slot on server '{server_name}' ({} concurrent call(s) allowed) and gave up. The server is busy with earlier calls.",
+                "MCP tool call not sent: waited {}s for a free slot on server '{server_name}' ({} concurrent call(s) allowed, limit {}s) and gave up. The server is busy with earlier calls.",
                 waited.as_secs(),
-                entry.max_concurrent_calls()
+                entry.max_concurrent_calls(),
+                limit.as_secs()
             ))));
         }
-        Ok(Err(mcp::McpEntryClosed)) => return McpEntryCall::EntryClosed,
-        Ok(Ok(slot)) => slot,
+        Err(mcp::McpAcquireError::Closed) => return McpEntryCall::EntryClosed,
+        Ok(slot) => slot,
     };
     let Some(conn) = slot.connection() else {
         return McpEntryCall::EntryClosed;

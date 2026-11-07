@@ -193,11 +193,20 @@ async fn connect_stub_named(
     url: String,
     reporter: Option<Arc<RecordingReporter>>,
 ) -> McpConnection {
+    // Short so the wedge test does not sit for a minute.
+    connect_stub_timeout(name, url, reporter, 2).await
+}
+
+async fn connect_stub_timeout(
+    name: &str,
+    url: String,
+    reporter: Option<Arc<RecordingReporter>>,
+    timeout_secs: u64,
+) -> McpConnection {
     let conn = McpConnection::connect(McpServerConfig {
         name: name.to_string(),
         transport: McpTransport::Sse { url },
-        // Short so the wedge test does not sit for a minute.
-        timeout_secs: 2,
+        timeout_secs,
         env: vec![],
         headers: vec![],
         oauth_provider: None,
@@ -588,5 +597,86 @@ async fn a_call_queued_behind_close_fails_cleanly() {
             .contains("was closed while the call was waiting"),
         "{}",
         queued.content
+    );
+}
+
+// --------------------------------------------------------------------------- Queue wait limit ---------------------------------------------------------------------------
+
+/// F1b: four calls of about a second to one server whose `timeout_secs` is 2, one slot. The fourth waits about three seconds, longer than `timeout_secs`, but every call ahead of it is bounded and finishes: it must be served, not given up on. (A fixed limit of `timeout_secs` failed it with "not sent".)
+#[tokio::test]
+async fn a_queue_of_slow_calls_longer_than_the_timeout_loses_no_call() {
+    let (url, _s) = spawn_stub(CallBehaviour::SlowSuccess(1000));
+    let conn = connect_stub_timeout("one", url, None, 2).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
+
+    let t = std::time::Instant::now();
+    let (a, b, c, d) = tokio::join!(
+        call(&conns, "t1", "mcp_one_slowop"),
+        call(&conns, "t2", "mcp_one_slowop"),
+        call(&conns, "t3", "mcp_one_slowop"),
+        call(&conns, "t4", "mcp_one_slowop"),
+    );
+    for (n, r) in [("t1", &a), ("t2", &b), ("t3", &c), ("t4", &d)] {
+        assert!(
+            !r.is_error,
+            "{n} failed after {:?}: {}",
+            t.elapsed(),
+            r.content
+        );
+    }
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(3900),
+        "the four calls overlapped: {:?}",
+        t.elapsed()
+    );
+}
+
+/// The limit is a net against a stuck server, not an unbounded wait. The only slot is held by the test (a server that never finishes the call in front), `timeout_secs` is 1 and one call is ahead: the queued call must give up with "not sent" after `1 * (ceil(2 / 1) + 1)` = 3 seconds, no sooner and not much later.
+#[tokio::test]
+async fn a_stuck_server_still_cuts_the_wait_with_not_sent() {
+    let (url, _s) = spawn_stub(CallBehaviour::Success);
+    let conn = connect_stub_timeout("one", url, None, 1).await;
+    let entry = McpConnectionEntry::new(conn, 1);
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![Arc::clone(&entry)]);
+
+    let held = entry.acquire().await.expect("the only slot");
+    let t = std::time::Instant::now();
+    let r = call(&conns, "t1", "mcp_one_slowop").await;
+    let waited = t.elapsed();
+    assert!(r.is_error, "should have given up: {}", r.content);
+    assert!(r.content.contains("not sent"), "{}", r.content);
+    assert!(
+        waited >= std::time::Duration::from_millis(2900),
+        "gave up before the limit for a queue of one: {waited:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(8),
+        "gave up far too late: {waited:?}"
+    );
+    drop(held);
+    assert!(!call(&conns, "t2", "mcp_one_slowop").await.is_error);
+}
+
+/// A wedged server (accepts calls, never answers) with a queue: each call ahead ends at `timeout_secs`, so the queue advances and every caller gets the timeout of its own call, never "not sent".
+#[tokio::test]
+async fn a_wedged_server_times_out_each_queued_call_on_its_own() {
+    let (url, _s) = spawn_stub(CallBehaviour::Wedge);
+    let conn = connect_stub_timeout("one", url, None, 1).await;
+    let conns: McpConnectionList = tokio::sync::Mutex::new(vec![McpConnectionEntry::new(conn, 1)]);
+
+    let t = std::time::Instant::now();
+    let (a, b, c) = tokio::join!(
+        call(&conns, "t1", "mcp_one_slowop"),
+        call(&conns, "t2", "mcp_one_slowop"),
+        call(&conns, "t3", "mcp_one_slowop"),
+    );
+    for (n, r) in [("t1", &a), ("t2", &b), ("t3", &c)] {
+        assert!(r.is_error, "{n}");
+        assert!(!r.content.contains("not sent"), "{n}: {}", r.content);
+    }
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t.elapsed()
     );
 }
