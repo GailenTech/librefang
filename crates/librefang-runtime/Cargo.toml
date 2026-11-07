@@ -108,6 +108,10 @@ metrics-util = { version = "0.20", features = ["debugging"] }
 # transitive deps land in `Cargo.lock`.
 wiremock = "0.6"
 tracing-subscriber = { workspace = true }
+# In-process fake MCP server for tests/mcp_dispatch_concurrency.rs (shares librefang-runtime-mcp/tests/support/fake_mcp.rs).
+rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
+axum = { workspace = true }
+tokio-util = { workspace = true }
 
 [features]
 default = ["media", "browser", "docker-sandbox", "seccomp-sandbox", "landlock-sandbox"]

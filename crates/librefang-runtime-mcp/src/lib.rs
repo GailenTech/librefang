@@ -2510,8 +2510,10 @@ pub struct McpConnectionEntry {
     conn: tokio::sync::RwLock<Option<McpConnection>>,
     permits: tokio::sync::Semaphore,
     max_concurrent_calls: usize,
-    /// The server's `timeout_secs`: bounds one call, and is also the longest a call is allowed to queue for a slot.
+    /// The server's `timeout_secs`: bounds one call (see `call_tool_with_caller`), and scales how long a call may queue for a slot (see [`queue_wait_limit`](Self::queue_wait_limit)).
     timeout_secs: u64,
+    /// Calls that hold a slot or are queued for one. A newcomer reads it on entry to know how many calls are ahead of it.
+    outstanding: std::sync::atomic::AtomicUsize,
     /// Set by [`close`](Self::close). A call that finishes after its entry was retired (reconnect, hot-reload, removal) must not report its outcome to the health monitor: health is keyed by server name, and the name now belongs to the replacement connection.
     retired: std::sync::atomic::AtomicBool,
 }
@@ -2526,7 +2528,29 @@ pub struct McpEntryClosed;
 /// Permission to make one call on a connection: a permit of the server's concurrency limit plus a shared lock on the connection. Dropping it releases both.
 pub struct McpCallSlot<'a> {
     _permit: tokio::sync::SemaphorePermit<'a>,
+    _ticket: QueueTicket<'a>,
     guard: tokio::sync::RwLockReadGuard<'a, Option<McpConnection>>,
+}
+
+/// A place in the entry's count of outstanding calls (queued or holding a slot). Dropping it, whether the call finished, gave up or was cancelled, takes the call out of the count.
+struct QueueTicket<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for QueueTicket<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Why [`McpConnectionEntry::acquire_bounded`] did not hand out a slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpAcquireError {
+    /// The entry was closed (reconnect, hot-reload, removal) before or while the caller waited.
+    Closed,
+    /// The queue limit passed without a slot coming free: the server is not finishing the calls ahead.
+    TimedOut {
+        /// How long this caller was allowed to wait.
+        limit: std::time::Duration,
+    },
 }
 
 impl McpCallSlot<'_> {
@@ -2539,9 +2563,11 @@ impl McpCallSlot<'_> {
 impl McpConnectionEntry {
     /// Wrap a freshly connected `conn` for storage in an [`McpConnectionList`].
     ///
-    /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1.
+    /// `max_concurrent_calls` is the number of calls that may be in flight on this connection at once; 0 is treated as 1 and anything above what a semaphore can hold is clamped to that.
     pub fn new(conn: McpConnection, max_concurrent_calls: usize) -> Arc<Self> {
-        let max_concurrent_calls = max_concurrent_calls.max(1);
+        // `Semaphore::new` panics above `MAX_PERMITS`; a value that large means "no limit" anyway.
+        let max_concurrent_calls =
+            max_concurrent_calls.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
         let timeout_secs = conn.config.timeout_secs;
         Arc::new(Self {
             name: conn.name().to_string(),
@@ -2550,6 +2576,7 @@ impl McpConnectionEntry {
             permits: tokio::sync::Semaphore::new(max_concurrent_calls),
             max_concurrent_calls,
             timeout_secs,
+            outstanding: std::sync::atomic::AtomicUsize::new(0),
             retired: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -2574,8 +2601,26 @@ impl McpConnectionEntry {
         self.timeout_secs
     }
 
-    /// Wait for a slot to call this connection. The wait is the queueing time behind other calls to the same server; callers that want to keep it out of a tool timeout measure and bound it themselves.
-    pub async fn acquire(&self) -> Result<McpCallSlot<'_>, McpEntryClosed> {
+    /// How long a call that finds `ahead` calls queued or running may wait for a slot: `timeout_secs * (ceil((ahead + 1) / max_concurrent_calls) + 1)`.
+    ///
+    /// Every call that holds a slot is bounded by `timeout_secs` and the semaphore is FIFO, so a caller with `ahead` calls in front of it gets a slot after at most `ceil(ahead / max_concurrent_calls)` rounds of `timeout_secs` as long as the server answers or times out calls at all. The limit is that, plus one round of slack. A fixed limit of `timeout_secs` cut off legitimate queues of slow calls (4 calls of 25 s on a 60 s server); this one only cuts off a server that is not finishing the calls ahead.
+    /// `ahead` counts calls that already gave up as well until they leave the count, which can only make the limit longer.
+    pub fn queue_wait_limit(&self, ahead: usize) -> std::time::Duration {
+        let rounds = (ahead / self.max_concurrent_calls + 1) as u64 + 1;
+        std::time::Duration::from_secs(self.timeout_secs.saturating_mul(rounds))
+    }
+
+    fn enter_queue(&self) -> (QueueTicket<'_>, usize) {
+        let ahead = self
+            .outstanding
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        (QueueTicket(&self.outstanding), ahead)
+    }
+
+    async fn acquire_with<'a>(
+        &'a self,
+        ticket: QueueTicket<'a>,
+    ) -> Result<McpCallSlot<'a>, McpEntryClosed> {
         let permit = self.permits.acquire().await.map_err(|_| McpEntryClosed)?;
         let guard = self.conn.read().await;
         if guard.is_none() {
@@ -2583,8 +2628,26 @@ impl McpConnectionEntry {
         }
         Ok(McpCallSlot {
             _permit: permit,
+            _ticket: ticket,
             guard,
         })
+    }
+
+    /// Wait for a slot to call this connection, without a limit. The wait is the queueing time behind other calls to the same server; callers should bound it, see [`acquire_bounded`](Self::acquire_bounded).
+    pub async fn acquire(&self) -> Result<McpCallSlot<'_>, McpEntryClosed> {
+        let (ticket, _) = self.enter_queue();
+        self.acquire_with(ticket).await
+    }
+
+    /// Wait for a slot, giving up after [`queue_wait_limit`](Self::queue_wait_limit) for the number of calls ahead at the moment of entering.
+    pub async fn acquire_bounded(&self) -> Result<McpCallSlot<'_>, McpAcquireError> {
+        let (ticket, ahead) = self.enter_queue();
+        let limit = self.queue_wait_limit(ahead);
+        match tokio::time::timeout(limit, self.acquire_with(ticket)).await {
+            Ok(Ok(slot)) => Ok(slot),
+            Ok(Err(McpEntryClosed)) => Err(McpAcquireError::Closed),
+            Err(_) => Err(McpAcquireError::TimedOut { limit }),
+        }
     }
 
     /// Mark the entry as no longer the server's current connection, without touching calls in flight or queued.
