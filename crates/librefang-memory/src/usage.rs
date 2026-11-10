@@ -1994,6 +1994,101 @@ mod tests {
             .is_empty());
     }
 
+    /// Insert a row with an exact stored timestamp, as `insert_record` would
+    /// write it (`to_rfc3339()` of a UTC instant: variable fractional digits).
+    fn insert_event_at(store: &UsageStore, agent: AgentId, ts: &str, input: i64) {
+        let conn = store.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms)
+             VALUES (?1, ?2, ?3, 'm', 'p', ?4, 0, 0.0, 0, 0)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                agent.0.to_string(),
+                ts,
+                input
+            ],
+        )
+        .unwrap();
+    }
+
+    fn since_of(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        )
+    }
+
+    #[test]
+    fn agent_events_since_compares_by_instant_across_formats_and_precisions() {
+        let store = setup();
+        let a = AgentId::new();
+        // Stored the way chrono writes them: 0, 3, 6 or 9 fractional digits.
+        insert_event_at(&store, a, "2026-11-10T12:34:56+00:00", 1);
+        insert_event_at(&store, a, "2026-11-10T12:34:56.122+00:00", 2);
+        insert_event_at(&store, a, "2026-11-10T12:34:56.123456+00:00", 3);
+        insert_event_at(&store, a, "2026-11-10T12:34:56.123456789+00:00", 4);
+        insert_event_at(&store, a, "2026-11-10T12:34:57+00:00", 5);
+        let ids =
+            |rows: Vec<AgentEventRow>| rows.iter().map(|r| r.input_tokens).collect::<Vec<_>>();
+
+        // Mixed-precision rows order by instant, not by string accident.
+        let all = store
+            .list_agent_events(a, since_of("2000-01-01T00:00:00Z"), 10)
+            .unwrap();
+        assert_eq!(ids(all), vec![1, 2, 3, 4, 5]);
+
+        // A JS-style cursor (millis, `Z`) and the same instant with `+00:00`
+        // select the same rows.
+        for cursor in [
+            "2026-11-10T12:34:56.122Z",
+            "2026-11-10T12:34:56.122+00:00",
+            "2026-11-10T14:34:56.122+02:00",
+        ] {
+            let rows = store.list_agent_events(a, since_of(cursor), 10).unwrap();
+            assert_eq!(ids(rows), vec![3, 4, 5], "cursor {cursor}");
+        }
+
+        // A cursor 1 ms before a stored microsecond row does not lose it.
+        let rows = store
+            .list_agent_events(a, since_of("2026-11-10T12:34:56.122456Z"), 10)
+            .unwrap();
+        assert_eq!(ids(rows), vec![3, 4, 5]);
+        let rows = store
+            .list_agent_events(a, since_of("2026-11-10T12:34:56.123Z"), 10)
+            .unwrap();
+        assert_eq!(ids(rows), vec![3, 4, 5], "123456us is after 123ms");
+        // Strictness at the exact instant.
+        let rows = store
+            .list_agent_events(a, since_of("2026-11-10T12:34:56.123456Z"), 10)
+            .unwrap();
+        assert_eq!(ids(rows), vec![4, 5]);
+
+        // Paging with a full page, stepping the cursor back 1 ms each time,
+        // sees every row (duplicates allowed, losses not).
+        let mut seen = std::collections::BTreeSet::new();
+        let mut cursor = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for _ in 0..10 {
+            let page = store.list_agent_events(a, Some(cursor), 2).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for r in &page {
+                seen.insert(r.input_tokens);
+            }
+            let last = chrono::DateTime::parse_from_rfc3339(&page.last().unwrap().timestamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            // Full page: step back 1 ms (as the engine does) ...
+            let next = last - chrono::Duration::milliseconds(1);
+            // ... but never behind the previous cursor, or this would loop.
+            cursor = if next > cursor { next } else { last };
+        }
+        assert_eq!(seen, [1, 2, 3, 4, 5].into_iter().collect());
+    }
+
     #[test]
     fn test_record_and_query_summary() {
         let store = setup();
