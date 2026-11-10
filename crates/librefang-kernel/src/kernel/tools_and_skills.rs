@@ -1343,6 +1343,9 @@ impl LibreFangKernel {
                         .and_then(|e| e.parent)
                         .unwrap_or(triggering_agent_id),
                 ),
+                iterations: None,
+                cache_read_input_tokens: Some(response.usage.cache_read_input_tokens),
+                cache_creation_input_tokens: Some(response.usage.cache_creation_input_tokens),
             };
             if let Err(e) = kernel.metering.engine.record(&usage_record) {
                 tracing::debug!(error = %e, "Failed to record background review usage");
