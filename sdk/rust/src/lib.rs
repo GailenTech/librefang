@@ -750,14 +750,19 @@ impl AgentsResource {
         .await
     }
 
-    pub async fn list_agent_events(&self, id: &str, limit: Option<&str>) -> Result<Value> {
+    pub async fn list_agent_events(
+        &self,
+        id: &str,
+        limit: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<Value> {
         do_req(
             &self.client,
             &self.base_url,
             reqwest::Method::GET,
             &["api", "agents", id, "events"],
             None,
-            &[("limit", limit)],
+            &[("limit", limit), ("since", since)],
         )
         .await
     }

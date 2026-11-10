@@ -273,8 +273,8 @@ class _AgentsResource(_Resource):
     def list_agent_ephemeral_runs(self, id: str, limit: Any = None):
         return self._c._request("GET", f"/api/agents/{id}/ephemeral-runs", None, query={"limit": limit})
 
-    def list_agent_events(self, id: str, limit: Any = None):
-        return self._c._request("GET", f"/api/agents/{id}/events", None, query={"limit": limit})
+    def list_agent_events(self, id: str, limit: Any = None, since: Any = None):
+        return self._c._request("GET", f"/api/agents/{id}/events", None, query={"limit": limit, "since": since})
 
     def list_agent_files(self, id: str):
         return self._c._request("GET", f"/api/agents/{id}/files")
