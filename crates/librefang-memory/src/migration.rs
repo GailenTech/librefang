@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 63;
+const SCHEMA_VERSION: u32 = 64;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -328,6 +328,11 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // This wanted to be 62 but #7974 took that number first, so it renumbers
     // to 63 rather than skipping past it — same rule as the note above.
     run_step!(63, migrate_v63);
+
+    // v64: per-turn detail on usage_events (iterations, prompt-cache tokens).
+    // All NULL-able: rows written before this version keep NULL, which reads
+    // as "not recorded", never as zero.
+    run_step!(64, migrate_v64);
     // Audit-trail consistency (#3538): user_version must match the count
     // of distinct rows in `migrations`. Drift means an earlier migration
     // applied DDL without recording its audit row — operator tooling
@@ -1623,6 +1628,34 @@ fn migrate_v63(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     Ok(())
 }
+/// v64: `usage_events.iterations`, `cache_read_input_tokens`,
+/// `cache_creation_input_tokens`.
+///
+/// The agent loop already knows how many LLM round-trips a turn took and how
+/// many input tokens came from / went to the provider's prompt cache, but the
+/// per-turn row dropped both. They are NULL-able and not backfilled: an old
+/// row has no honest value for them.
+fn migrate_v64(conn: &Connection) -> Result<(), rusqlite::Error> {
+    for (col, ty) in [
+        ("iterations", "INTEGER"),
+        ("cache_read_input_tokens", "INTEGER"),
+        ("cache_creation_input_tokens", "INTEGER"),
+    ] {
+        if !try_column_exists(conn, "usage_events", col)? {
+            conn.execute(
+                &format!("ALTER TABLE usage_events ADD COLUMN {col} {ty}"),
+                [],
+            )?;
+        }
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (version, applied_at, description) \
+         VALUES (64, datetime('now'), 'Add usage_events.iterations and prompt-cache token columns')",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Rebuild `memories_fts` from `memories`, dropping whatever was there.
 ///
 /// Idempotent and safe to call at any time: the index is a pure derivative of
@@ -3914,6 +3947,64 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v64_adds_turn_detail_columns_and_keeps_old_rows_null() {
+        // A file at v63 (the three columns absent) with a row already in it,
+        // then opened by a v64 binary.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("librefang.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            run_migrations(&conn).unwrap();
+            for col in [
+                "iterations",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            ] {
+                conn.execute(&format!("ALTER TABLE usage_events DROP COLUMN {col}"), [])
+                    .unwrap();
+            }
+            conn.execute("DELETE FROM migrations WHERE version = 64", [])
+                .unwrap();
+            set_schema_version(&conn, 63).unwrap();
+            conn.execute(
+                "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms) \
+                 VALUES ('old', 'agent-1', '2026-11-01T00:00:00+00:00', 'm', 'p', 10, 5, 0.1, 1, 20)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        assert!(!column_exists(&conn, "usage_events", "iterations"));
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        for col in [
+            "iterations",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            assert!(column_exists(&conn, "usage_events", col), "{col} missing");
+        }
+        let (it, cr, cc, input): (Option<i64>, Option<i64>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT iterations, cache_read_input_tokens, cache_creation_input_tokens, input_tokens \
+                 FROM usage_events WHERE id = 'old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (it, cr, cc),
+            (None, None, None),
+            "old rows stay NULL, not 0"
+        );
+        assert_eq!(input, 10, "existing data is untouched");
+
+        // Re-running the step on an already migrated file is a no-op.
+        migrate_v64(&conn).unwrap();
+    }
+
+    #[test]
     fn test_migrate_v23_adds_user_id_and_channel_to_usage_events() {
         // RBAC M5: usage_events gains NULL-able user_id / channel columns
         // for per-user spend rollup. Pre-M5 INSERTs (no user_id/channel in
@@ -4967,6 +5058,8 @@ mod tests {
                 created_at TEXT NOT NULL,
                 completed_at TEXT
             );
+            -- Every real v50 database has this table (v1 creates it); v64 alters it.
+            CREATE TABLE usage_events (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL);
             CREATE TABLE migrations (
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL,

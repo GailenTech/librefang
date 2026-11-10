@@ -235,6 +235,18 @@ pub struct UsageRecord {
     /// `agent_id`".
     #[serde(default)]
     pub billed_agent_id: Option<AgentId>,
+    /// Agent-loop iterations (LLM round-trips) the turn took. `None` for
+    /// paths that do not run the agent loop and for pre-v64 records.
+    #[serde(default)]
+    pub iterations: Option<u32>,
+    /// Input tokens served from the provider's prompt cache. `None` when the
+    /// caller did not track it and for pre-v64 records.
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u64>,
+    /// Input tokens written to the provider's prompt cache. `None` when the
+    /// caller did not track it and for pre-v64 records.
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 impl UsageRecord {
@@ -271,6 +283,9 @@ impl UsageRecord {
             channel: None,
             session_id: None,
             billed_agent_id: None,
+            iterations: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         }
     }
 }
@@ -340,6 +355,16 @@ pub struct AgentEventRow {
     pub cost_usd: f64,
     pub tool_calls: u64,
     pub latency_ms: u64,
+    /// Originating channel (`cron`, `telegram`, `api`, …), when known.
+    pub channel: Option<String>,
+    /// Session the turn belonged to, when known.
+    pub session_id: Option<String>,
+    /// Agent-loop iterations of the turn; `None` on pre-v64 rows.
+    pub iterations: Option<u32>,
+    /// Prompt-cache read tokens; `None` on pre-v64 rows.
+    pub cache_read_input_tokens: Option<u64>,
+    /// Prompt-cache write tokens; `None` on pre-v64 rows.
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 /// Usage grouped by model.
@@ -480,8 +505,9 @@ impl UsageStore {
         // v30 added session_id — all are NULL-able so missing attribution
         // round-trips as NULL.
         conn.execute(
-            "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms, user_id, channel, session_id, billed_agent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms, user_id, channel, session_id, billed_agent_id,
+                                       iterations, cache_read_input_tokens, cache_creation_input_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             rusqlite::params![
                 id,
                 record.agent_id.0.to_string(),
@@ -497,6 +523,9 @@ impl UsageStore {
                 record.channel.as_deref(),
                 record.session_id.map(|s| s.0.to_string()),
                 record.billed_agent_id.map(|a| a.0.to_string()),
+                record.iterations.map(|n| n as i64),
+                record.cache_read_input_tokens.map(|n| n as i64),
+                record.cache_creation_input_tokens.map(|n| n as i64),
             ],
         )
         .map_err(LibreFangError::memory)?;
@@ -1670,34 +1699,76 @@ impl UsageStore {
         agent_id: AgentId,
         limit: u32,
     ) -> LibreFangResult<Vec<AgentEventRow>> {
+        self.list_agent_events(agent_id, None, limit)
+    }
+
+    /// Usage events for one agent, optionally only those strictly newer than
+    /// `since`.
+    ///
+    /// Without `since` this is the tail feed: newest first. With `since` the
+    /// order flips to oldest first, so a poller that keeps the last timestamp
+    /// it saw as a cursor and passes it back never skips a row when more than
+    /// `limit` rows arrived in between (it takes the first `limit` after the
+    /// cursor, not the last).
+    ///
+    /// Timestamps are stored by [`Self::insert_record`] as `to_rfc3339()` in
+    /// UTC, so `since` is normalised to the same form before the textual
+    /// comparison.
+    pub fn list_agent_events(
+        &self,
+        agent_id: AgentId,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        limit: u32,
+    ) -> LibreFangResult<Vec<AgentEventRow>> {
         let conn = self.pool.get().map_err(LibreFangError::memory)?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT timestamp, model, provider, input_tokens, output_tokens,
-                        cost_usd, tool_calls, latency_ms
-                 FROM usage_events
-                 WHERE agent_id = ?1
-                 ORDER BY timestamp DESC
-                 LIMIT ?2",
-            )
-            .map_err(LibreFangError::memory)?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params![agent_id.0.to_string(), limit as i64],
-                |row| {
-                    Ok(AgentEventRow {
-                        timestamp: row.get(0)?,
-                        model: row.get(1)?,
-                        provider: row.get(2)?,
-                        input_tokens: row.get::<_, i64>(3)?.max(0) as u64,
-                        output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
-                        cost_usd: row.get(5)?,
-                        tool_calls: row.get::<_, i64>(6)?.max(0) as u64,
-                        latency_ms: row.get::<_, i64>(7)?.max(0) as u64,
-                    })
-                },
-            )
-            .map_err(LibreFangError::memory)?;
+        let sql = if since.is_some() {
+            "SELECT timestamp, model, provider, input_tokens, output_tokens,
+                    cost_usd, tool_calls, latency_ms, channel, session_id,
+                    iterations, cache_read_input_tokens, cache_creation_input_tokens
+             FROM usage_events
+             WHERE agent_id = ?1 AND timestamp > ?3
+             ORDER BY timestamp ASC
+             LIMIT ?2"
+        } else {
+            "SELECT timestamp, model, provider, input_tokens, output_tokens,
+                    cost_usd, tool_calls, latency_ms, channel, session_id,
+                    iterations, cache_read_input_tokens, cache_creation_input_tokens
+             FROM usage_events
+             WHERE agent_id = ?1
+             ORDER BY timestamp DESC
+             LIMIT ?2"
+        };
+        let mut stmt = conn.prepare(sql).map_err(LibreFangError::memory)?;
+        let map_row = |row: &rusqlite::Row<'_>| {
+            Ok(AgentEventRow {
+                timestamp: row.get(0)?,
+                model: row.get(1)?,
+                provider: row.get(2)?,
+                input_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+                output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
+                cost_usd: row.get(5)?,
+                tool_calls: row.get::<_, i64>(6)?.max(0) as u64,
+                latency_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                channel: row.get(8)?,
+                session_id: row.get(9)?,
+                iterations: row
+                    .get::<_, Option<i64>>(10)?
+                    .map(|n| n.clamp(0, u32::MAX as i64) as u32),
+                cache_read_input_tokens: row.get::<_, Option<i64>>(11)?.map(|n| n.max(0) as u64),
+                cache_creation_input_tokens: row
+                    .get::<_, Option<i64>>(12)?
+                    .map(|n| n.max(0) as u64),
+            })
+        };
+        let agent = agent_id.0.to_string();
+        let rows = match since {
+            Some(ts) => stmt.query_map(
+                rusqlite::params![agent, limit as i64, ts.to_rfc3339()],
+                map_row,
+            ),
+            None => stmt.query_map(rusqlite::params![agent, limit as i64], map_row),
+        }
+        .map_err(LibreFangError::memory)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(LibreFangError::memory)?);
@@ -1818,6 +1889,109 @@ mod tests {
         let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
         run_migrations(&pool.get().unwrap()).unwrap();
         UsageStore::new(pool)
+    }
+
+    fn turn_record(agent_id: AgentId, input: u64) -> UsageRecord {
+        UsageRecord {
+            agent_id,
+            provider: "p".to_string(),
+            model: "m".to_string(),
+            input_tokens: input,
+            output_tokens: 1,
+            cost_usd: 0.01,
+            tool_calls: 0,
+            latency_ms: 5,
+            channel: Some("cron".to_string()),
+            session_id: Some(SessionId::new()),
+            iterations: Some(3),
+            cache_read_input_tokens: Some(40),
+            cache_creation_input_tokens: Some(7),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_events_carry_turn_detail_and_old_style_rows_read_null() {
+        let store = setup();
+        let agent_id = AgentId::new();
+        let rec = turn_record(agent_id, 100);
+        let sid = rec.session_id.unwrap().0.to_string();
+        store.record(&rec).unwrap();
+        // A record that does not know the new fields (as an older writer or a
+        // path outside the agent loop) reads back as NULL, not zero.
+        store
+            .record(&UsageRecord::anonymous(agent_id, "p", "m", 1, 1, 0.0, 0, 1))
+            .unwrap();
+
+        let rows = store.list_agent_events_recent(agent_id, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Newest first: the anonymous record is first.
+        assert_eq!(rows[0].iterations, None);
+        assert_eq!(rows[0].cache_read_input_tokens, None);
+        assert_eq!(rows[0].cache_creation_input_tokens, None);
+        assert_eq!(rows[0].channel, None);
+        assert_eq!(rows[0].session_id, None);
+        assert_eq!(rows[1].iterations, Some(3));
+        assert_eq!(rows[1].cache_read_input_tokens, Some(40));
+        assert_eq!(rows[1].cache_creation_input_tokens, Some(7));
+        assert_eq!(rows[1].channel.as_deref(), Some("cron"));
+        assert_eq!(rows[1].session_id.as_deref(), Some(sid.as_str()));
+        assert_eq!(rows[1].input_tokens, 100);
+    }
+
+    #[test]
+    fn agent_events_since_is_strict_ascending_and_capped() {
+        let store = setup();
+        let agent_id = AgentId::new();
+        let other = AgentId::new();
+        for i in 1..=5u64 {
+            store.record(&turn_record(agent_id, i)).unwrap();
+            store.record(&turn_record(other, 900 + i)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+
+        // Without `since`: newest first, as before.
+        let tail = store.list_agent_events(agent_id, None, 10).unwrap();
+        assert_eq!(
+            tail.iter().map(|r| r.input_tokens).collect::<Vec<_>>(),
+            vec![5, 4, 3, 2, 1]
+        );
+
+        // With `since` before everything: ascending, capped to the *first* N
+        // so a cursor that advances to the last row seen loses nothing.
+        let epoch = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let page1 = store.list_agent_events(agent_id, Some(epoch), 2).unwrap();
+        assert_eq!(
+            page1.iter().map(|r| r.input_tokens).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        // Strictly after the cursor: the row at the cursor is not repeated.
+        let cursor = chrono::DateTime::parse_from_rfc3339(&page1[1].timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let page2 = store.list_agent_events(agent_id, Some(cursor), 2).unwrap();
+        assert_eq!(
+            page2.iter().map(|r| r.input_tokens).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        let cursor = chrono::DateTime::parse_from_rfc3339(&page2[1].timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let page3 = store.list_agent_events(agent_id, Some(cursor), 2).unwrap();
+        assert_eq!(
+            page3.iter().map(|r| r.input_tokens).collect::<Vec<_>>(),
+            vec![5]
+        );
+        let cursor = chrono::DateTime::parse_from_rfc3339(&page3[0].timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(store
+            .list_agent_events(agent_id, Some(cursor), 2)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
