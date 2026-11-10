@@ -124,6 +124,16 @@ pub struct AgentEventRowView {
     pub cost_usd: f64,
     pub tool_calls: u64,
     pub latency_ms: u64,
+    /// Originating channel (`cron`, `telegram`, `api`, ...); null when unattributed.
+    pub channel: Option<String>,
+    /// Session the turn belonged to; null for session-less paths and old rows.
+    pub session_id: Option<String>,
+    /// Agent-loop iterations of the turn; null on rows written before v64.
+    pub iterations: Option<u32>,
+    /// Prompt-cache read tokens; null on rows written before v64.
+    pub cache_read_input_tokens: Option<u64>,
+    /// Prompt-cache write tokens; null on rows written before v64.
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 impl From<librefang_memory::usage::AgentEventRow> for AgentEventRowView {
@@ -137,6 +147,11 @@ impl From<librefang_memory::usage::AgentEventRow> for AgentEventRowView {
             cost_usd: r.cost_usd,
             tool_calls: r.tool_calls,
             latency_ms: r.latency_ms,
+            channel: r.channel,
+            session_id: r.session_id,
+            iterations: r.iterations,
+            cache_read_input_tokens: r.cache_read_input_tokens,
+            cache_creation_input_tokens: r.cache_creation_input_tokens,
         }
     }
 }
@@ -152,6 +167,11 @@ pub struct AgentEventsResponse {
 /// from `usage_events` (newest first) so the panel shows real
 /// operational data — model dispatch, latency, tokens, cost — instead
 /// of the audit ledger, which is mostly admin lifecycle entries.
+///
+/// With `since=<RFC3339>` only rows strictly newer than that instant come
+/// back, oldest first, capped by `limit`: a poller keeps the last
+/// `timestamp` it saw as a cursor and loses nothing even when more than
+/// `limit` rows arrived between polls.
 #[utoipa::path(
     get,
     path = "/api/agents/{id}/events",
@@ -159,9 +179,11 @@ pub struct AgentEventsResponse {
     params(
         ("id" = String, Path, description = "Agent ID"),
         ("limit" = Option<u32>, Query, description = "Max rows (default 30, max 200)"),
+        ("since" = Option<String>, Query, description = "RFC 3339 instant; only rows strictly newer, in ascending order"),
     ),
     responses(
         (status = 200, description = "Recent agent events", body = AgentEventsResponse),
+        (status = 400, description = "Invalid agent id or since"),
         (status = 404, description = "Agent not found")
     )
 )]
@@ -212,10 +234,24 @@ pub async fn list_agent_events(
         .unwrap_or(30)
         .min(200);
 
+    let since = match params.get("since") {
+        None => None,
+        Some(raw) => match chrono::DateTime::parse_from_rfc3339(raw) {
+            Ok(t) => Some(t.with_timezone(&chrono::Utc)),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "invalid since: expected RFC 3339" })),
+                )
+                    .into_response();
+            }
+        },
+    };
+
     let substrate = state.kernel.memory_substrate();
     match substrate
         .usage()
-        .list_agent_events_recent(agent_uuid, limit)
+        .list_agent_events(agent_uuid, since, limit)
     {
         Ok(events) => {
             let view = AgentEventsResponse {

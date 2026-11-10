@@ -1,0 +1,2 @@
+Record the agent-loop iteration count and the prompt-cache read/write token counts on each `usage_events` row (schema v64, NULL-able, old rows stay NULL), and return them from `GET /api/agents/{id}/events` together with `channel` and `session_id`.
+The same route accepts `since=<RFC3339>` to return only rows strictly newer than that instant, oldest first and capped by `limit`, so a poller can advance a cursor without losing rows. (@jorgeuriarte)

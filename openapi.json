@@ -1399,7 +1399,7 @@
           "agents"
         ],
         "summary": "GET /api/agents/{id}/events — Recent turn-level events for one agent.",
-        "description": "Backs the dashboard's agent-detail Logs tab. Returns rows sourced\nfrom `usage_events` (newest first) so the panel shows real\noperational data — model dispatch, latency, tokens, cost — instead\nof the audit ledger, which is mostly admin lifecycle entries.",
+        "description": "Backs the dashboard's agent-detail Logs tab. Returns rows sourced\nfrom `usage_events` (newest first) so the panel shows real\noperational data — model dispatch, latency, tokens, cost — instead\nof the audit ledger, which is mostly admin lifecycle entries.\n\nWith `since=<RFC3339>` only rows strictly newer than that instant come\nback, oldest first, capped by `limit`: a poller keeps the last\n`timestamp` it saw as a cursor and loses nothing even when more than\n`limit` rows arrived between polls.",
         "operationId": "list_agent_events",
         "parameters": [
           {
@@ -1421,6 +1421,15 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "RFC 3339 instant; only rows strictly newer, in ascending order",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1433,6 +1442,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid agent id or since"
           },
           "404": {
             "description": "Agent not found"
@@ -16992,6 +17004,31 @@
           "latency_ms"
         ],
         "properties": {
+          "cache_creation_input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Prompt-cache write tokens; null on rows written before v64.",
+            "minimum": 0
+          },
+          "cache_read_input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Prompt-cache read tokens; null on rows written before v64.",
+            "minimum": 0
+          },
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Originating channel (`cron`, `telegram`, `api`, ...); null when unattributed."
+          },
           "cost_usd": {
             "type": "number",
             "format": "double"
@@ -16999,6 +17036,15 @@
           "input_tokens": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "iterations": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Agent-loop iterations of the turn; null on rows written before v64.",
             "minimum": 0
           },
           "latency_ms": {
@@ -17016,6 +17062,13 @@
           },
           "provider": {
             "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Session the turn belonged to; null for session-less paths and old rows."
           },
           "timestamp": {
             "type": "string"

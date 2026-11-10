@@ -4819,16 +4819,35 @@ export interface components {
          *     without forcing utoipa into the memory crate.
          */
         AgentEventRowView: {
+            /**
+             * Format: int64
+             * @description Prompt-cache write tokens; null on rows written before v64.
+             */
+            cache_creation_input_tokens?: number | null;
+            /**
+             * Format: int64
+             * @description Prompt-cache read tokens; null on rows written before v64.
+             */
+            cache_read_input_tokens?: number | null;
+            /** @description Originating channel (`cron`, `telegram`, `api`, ...); null when unattributed. */
+            channel?: string | null;
             /** Format: double */
             cost_usd: number;
             /** Format: int64 */
             input_tokens: number;
+            /**
+             * Format: int32
+             * @description Agent-loop iterations of the turn; null on rows written before v64.
+             */
+            iterations?: number | null;
             /** Format: int64 */
             latency_ms: number;
             model: string;
             /** Format: int64 */
             output_tokens: number;
             provider: string;
+            /** @description Session the turn belonged to; null for session-less paths and old rows. */
+            session_id?: string | null;
             timestamp: string;
             /** Format: int64 */
             tool_calls: number;
@@ -5991,6 +6010,8 @@ export interface operations {
             query?: {
                 /** @description Max rows (default 30, max 200) */
                 limit?: number;
+                /** @description RFC 3339 instant; only rows strictly newer, in ascending order */
+                since?: string;
             };
             header?: never;
             path: {
