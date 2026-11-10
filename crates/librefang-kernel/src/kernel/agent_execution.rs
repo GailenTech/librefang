@@ -1857,6 +1857,9 @@ impl LibreFangKernel {
             // visibility over work done on its behalf. `agent_id` above is
             // untouched and remains the quota subject — see `billed_agent_for`.
             billed_agent_id: Some(billed_agent_for(entry)),
+            iterations: Some(result.iterations),
+            cache_read_input_tokens: Some(result.total_usage.cache_read_input_tokens),
+            cache_creation_input_tokens: Some(result.total_usage.cache_creation_input_tokens),
         };
         if let Err(e) = self.metering.engine.check_all_and_record(
             &usage_record,

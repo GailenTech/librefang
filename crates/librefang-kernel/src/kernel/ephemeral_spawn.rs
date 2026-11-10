@@ -593,6 +593,9 @@ impl LibreFangKernel {
             // sessions table, so naming it here would produce a usage row
             // pointing at a session that does not exist.
             session_id: None,
+            iterations: Some(result.iterations),
+            cache_read_input_tokens: Some(result.total_usage.cache_read_input_tokens),
+            cache_creation_input_tokens: Some(result.total_usage.cache_creation_input_tokens),
         };
         if let Err(e) = self.metering.engine.check_all_and_record(
             &usage_record,

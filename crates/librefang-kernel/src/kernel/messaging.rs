@@ -855,6 +855,9 @@ impl LibreFangKernel {
             // #7714: an ephemeral turn on a spawned worker still spends on
             // its spawner's behalf, so it rolls up the same way as a full turn.
             billed_agent_id: Some(crate::kernel::agent_execution::billed_agent_for(&entry)),
+            iterations: Some(result.iterations),
+            cache_read_input_tokens: Some(result.total_usage.cache_read_input_tokens),
+            cache_creation_input_tokens: Some(result.total_usage.cache_creation_input_tokens),
         };
         if let Err(e) = self.metering.engine.check_all_and_record(
             &usage_record,
@@ -3337,6 +3340,11 @@ impl LibreFangKernel {
                         session_id: Some(effective_session_id),
                         // #7714: same rollup as the non-streaming path.
                         billed_agent_id: Some(billed_agent_id),
+                        iterations: Some(result.iterations),
+                        cache_read_input_tokens: Some(result.total_usage.cache_read_input_tokens),
+                        cache_creation_input_tokens: Some(
+                            result.total_usage.cache_creation_input_tokens,
+                        ),
                     };
                     if let Err(e) = kernel_clone.metering.engine.check_all_and_record(
                         &usage_record,
