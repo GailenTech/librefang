@@ -236,15 +236,15 @@ pub struct UsageRecord {
     #[serde(default)]
     pub billed_agent_id: Option<AgentId>,
     /// Agent-loop iterations (LLM round-trips) the turn took. `None` for
-    /// paths that do not run the agent loop and for pre-v64 records.
+    /// paths that do not run the agent loop and for records written before these columns existed.
     #[serde(default)]
     pub iterations: Option<u32>,
     /// Input tokens served from the provider's prompt cache. `None` when the
-    /// caller did not track it and for pre-v64 records.
+    /// caller did not track it and for records written before these columns existed.
     #[serde(default)]
     pub cache_read_input_tokens: Option<u64>,
     /// Input tokens written to the provider's prompt cache. `None` when the
-    /// caller did not track it and for pre-v64 records.
+    /// caller did not track it and for records written before these columns existed.
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
 }
@@ -359,11 +359,11 @@ pub struct AgentEventRow {
     pub channel: Option<String>,
     /// Session the turn belonged to, when known.
     pub session_id: Option<String>,
-    /// Agent-loop iterations of the turn; `None` on pre-v64 rows.
+    /// Agent-loop iterations of the turn; `None` on rows written before these columns existed.
     pub iterations: Option<u32>,
-    /// Prompt-cache read tokens; `None` on pre-v64 rows.
+    /// Prompt-cache read tokens; `None` on rows written before these columns existed.
     pub cache_read_input_tokens: Option<u64>,
-    /// Prompt-cache write tokens; `None` on pre-v64 rows.
+    /// Prompt-cache write tokens; `None` on rows written before these columns existed.
     pub cache_creation_input_tokens: Option<u64>,
 }
 

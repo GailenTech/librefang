@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 64;
+const SCHEMA_VERSION: u32 = 63;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -329,10 +329,6 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // to 63 rather than skipping past it — same rule as the note above.
     run_step!(63, migrate_v63);
 
-    // v64: per-turn detail on usage_events (iterations, prompt-cache tokens).
-    // All NULL-able: rows written before this version keep NULL, which reads
-    // as "not recorded", never as zero.
-    run_step!(64, migrate_v64);
     // Audit-trail consistency (#3538): user_version must match the count
     // of distinct rows in `migrations`. Drift means an earlier migration
     // applied DDL without recording its audit row — operator tooling
@@ -387,6 +383,8 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
              without recording their audit row (#3538)"
         );
     }
+
+    ensure_gailen_usage_columns(conn)?;
 
     Ok(())
 }
@@ -1628,31 +1626,40 @@ fn migrate_v63(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     Ok(())
 }
-/// v64: `usage_events.iterations`, `cache_read_input_tokens`,
-/// `cache_creation_input_tokens`.
+/// Fork-only additive columns on `usage_events`: `iterations`,
+/// `cache_read_input_tokens`, `cache_creation_input_tokens`.
 ///
-/// The agent loop already knows how many LLM round-trips a turn took and how
-/// many input tokens came from / went to the provider's prompt cache, but the
-/// per-turn row dropped both. They are NULL-able and not backfilled: an old
-/// row has no honest value for them.
-fn migrate_v64(conn: &Connection) -> Result<(), rusqlite::Error> {
-    for (col, ty) in [
-        ("iterations", "INTEGER"),
-        ("cache_read_input_tokens", "INTEGER"),
-        ("cache_creation_input_tokens", "INTEGER"),
+/// This is deliberately NOT a numbered `migrate_vN` step. The numbers belong
+/// to upstream: upstream already uses v64 for something else, and a database
+/// this fork stamped `user_version = 64` would never run upstream's v64 the
+/// day the fork catches up (`run_step!` gates on `current_version < N`). It
+/// would also make a database unreadable by the previous binary, which
+/// refuses any `user_version` above its `SCHEMA_VERSION`.
+///
+/// So `SCHEMA_VERSION` and `user_version` are untouched, no row is written to
+/// `migrations`, and this runs at the end of every `run_migrations`, guarded
+/// by `try_column_exists` so it is idempotent. The columns are nullable and
+/// not backfilled: NULL on an old row means "not recorded". Adding nullable
+/// columns is also harmless to a binary that does not know them (its INSERTs
+/// and SELECTs name their columns explicitly).
+///
+/// Remove this function once upstream carries equivalent columns.
+fn ensure_gailen_usage_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if !try_table_exists(conn, "usage_events")? {
+        return Ok(());
+    }
+    for col in [
+        "iterations",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
     ] {
         if !try_column_exists(conn, "usage_events", col)? {
             conn.execute(
-                &format!("ALTER TABLE usage_events ADD COLUMN {col} {ty}"),
+                &format!("ALTER TABLE usage_events ADD COLUMN {col} INTEGER"),
                 [],
             )?;
         }
     }
-    conn.execute(
-        "INSERT OR IGNORE INTO migrations (version, applied_at, description) \
-         VALUES (64, datetime('now'), 'Add usage_events.iterations and prompt-cache token columns')",
-        [],
-    )?;
     Ok(())
 }
 
@@ -3946,26 +3953,24 @@ mod tests {
         assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
+    const GAILEN_COLS: [&str; 3] = [
+        "iterations",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ];
+
     #[test]
-    fn migrate_v64_adds_turn_detail_columns_and_keeps_old_rows_null() {
-        // A file at v63 (the three columns absent) with a row already in it,
-        // then opened by a v64 binary.
+    fn gailen_usage_columns_are_added_without_touching_the_ladder() {
+        // A file at v63 without the columns, with a row already in it.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("librefang.db");
         {
             let conn = Connection::open(&path).unwrap();
             run_migrations(&conn).unwrap();
-            for col in [
-                "iterations",
-                "cache_read_input_tokens",
-                "cache_creation_input_tokens",
-            ] {
+            for col in GAILEN_COLS {
                 conn.execute(&format!("ALTER TABLE usage_events DROP COLUMN {col}"), [])
                     .unwrap();
             }
-            conn.execute("DELETE FROM migrations WHERE version = 64", [])
-                .unwrap();
-            set_schema_version(&conn, 63).unwrap();
             conn.execute(
                 "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms) \
                  VALUES ('old', 'agent-1', '2026-11-01T00:00:00+00:00', 'm', 'p', 10, 5, 0.1, 1, 20)",
@@ -3973,18 +3978,26 @@ mod tests {
             )
             .unwrap();
         }
-
         let conn = Connection::open(&path).unwrap();
         assert!(!column_exists(&conn, "usage_events", "iterations"));
+        let audit_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM migrations", [], |r| r.get(0))
+            .unwrap();
+
         run_migrations(&conn).unwrap();
-        assert_eq!(get_schema_version(&conn).unwrap(), SCHEMA_VERSION);
-        for col in [
-            "iterations",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ] {
+
+        assert_eq!(
+            SCHEMA_VERSION, 63,
+            "the fork must not take upstream numbers"
+        );
+        assert_eq!(get_schema_version(&conn).unwrap(), 63);
+        for col in GAILEN_COLS {
             assert!(column_exists(&conn, "usage_events", col), "{col} missing");
         }
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(audit_rows, after, "no audit row for a fork-only step");
         let (it, cr, cc, input): (Option<i64>, Option<i64>, Option<i64>, i64) = conn
             .query_row(
                 "SELECT iterations, cache_read_input_tokens, cache_creation_input_tokens, input_tokens \
@@ -4000,8 +4013,40 @@ mod tests {
         );
         assert_eq!(input, 10, "existing data is untouched");
 
-        // Re-running the step on an already migrated file is a no-op.
-        migrate_v64(&conn).unwrap();
+        // Running it again (directly, and through the ladder) changes nothing.
+        ensure_gailen_usage_columns(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 63);
+        let again: i64 = conn
+            .query_row("SELECT COUNT(*) FROM migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(audit_rows, again);
+    }
+
+    #[test]
+    fn database_with_gailen_columns_still_works_for_a_binary_that_ignores_them() {
+        // The previous binary names its columns explicitly, so extra nullable
+        // columns neither break its INSERT nor its SELECT, and the ladder
+        // (still v63) accepts the file.
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert!(column_exists(&conn, "usage_events", "iterations"));
+        assert_eq!(get_schema_version(&conn).unwrap(), 63);
+        conn.execute(
+            "INSERT INTO usage_events (id, agent_id, timestamp, model, provider, input_tokens, output_tokens, cost_usd, tool_calls, latency_ms, user_id, channel, session_id, billed_agent_id) \
+             VALUES ('x', 'a', '2026-11-01T00:00:00+00:00', 'm', 'p', 1, 1, 0.0, 0, 1, NULL, NULL, NULL, NULL)",
+            [],
+        )
+        .expect("old-shaped INSERT works with the extra columns");
+        let n: i64 = conn
+            .query_row(
+                "SELECT input_tokens FROM usage_events WHERE id = 'x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        run_migrations(&conn).expect("re-opening is fine");
     }
 
     #[test]
@@ -5058,8 +5103,6 @@ mod tests {
                 created_at TEXT NOT NULL,
                 completed_at TEXT
             );
-            -- Every real v50 database has this table (v1 creates it); v64 alters it.
-            CREATE TABLE usage_events (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL);
             CREATE TABLE migrations (
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL,
