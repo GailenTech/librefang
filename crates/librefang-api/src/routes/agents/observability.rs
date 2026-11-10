@@ -128,11 +128,11 @@ pub struct AgentEventRowView {
     pub channel: Option<String>,
     /// Session the turn belonged to; null for session-less paths and old rows.
     pub session_id: Option<String>,
-    /// Agent-loop iterations of the turn; null on rows written before v64.
+    /// Agent-loop iterations of the turn; null on rows written before these columns existed.
     pub iterations: Option<u32>,
-    /// Prompt-cache read tokens; null on rows written before v64.
+    /// Prompt-cache read tokens; null on rows written before these columns existed.
     pub cache_read_input_tokens: Option<u64>,
-    /// Prompt-cache write tokens; null on rows written before v64.
+    /// Prompt-cache write tokens; null on rows written before these columns existed.
     pub cache_creation_input_tokens: Option<u64>,
 }
 
@@ -161,17 +161,18 @@ pub struct AgentEventsResponse {
     pub events: Vec<AgentEventRowView>,
 }
 
-/// GET /api/agents/{id}/events — Recent turn-level events for one agent.
+/// GET /api/agents/{id}/events — Turn-level events for one agent.
 ///
-/// Backs the dashboard's agent-detail Logs tab. Returns rows sourced
-/// from `usage_events` (newest first) so the panel shows real
-/// operational data — model dispatch, latency, tokens, cost — instead
-/// of the audit ledger, which is mostly admin lifecycle entries.
+/// Without `since`, rows go from newest to oldest. With `since=<RFC3339>`,
+/// only rows strictly newer than that instant come back, from oldest to
+/// newest, capped by `limit`: a poller keeps the last `timestamp` it saw as
+/// a cursor and loses nothing even when more than `limit` rows arrived
+/// between polls.
 ///
-/// With `since=<RFC3339>` only rows strictly newer than that instant come
-/// back, oldest first, capped by `limit`: a poller keeps the last
-/// `timestamp` it saw as a cursor and loses nothing even when more than
-/// `limit` rows arrived between polls.
+/// Backs the dashboard's agent-detail Logs tab. Rows come from
+/// `usage_events`, so the panel shows real operational data (model
+/// dispatch, latency, tokens, cost, iterations, prompt-cache tokens)
+/// instead of the audit ledger, which is mostly admin lifecycle entries.
 #[utoipa::path(
     get,
     path = "/api/agents/{id}/events",

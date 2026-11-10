@@ -3,8 +3,10 @@
 //!
 //! Two things are pinned here:
 //!
-//! 1. A turn run the way the cron scheduler runs it (a `SenderContext` with
-//!    `channel = "cron"`) leaves a `usage_events` row with `channel = "cron"`,
+//! 1. A turn sent with a cron-shaped `SenderContext` (`channel = "cron"`; it
+//!    does NOT go through `cron_tick`, that path is covered by
+//!    `dispatched_cron_turn_writes_usage_row_with_channel_iterations_and_cache`
+//!    in the kernel) leaves a `usage_events` row with `channel = "cron"`,
 //!    `iterations` and the prompt-cache token counts, and the route returns
 //!    them. The kernel points at a local OpenAI-compatible stub so the whole
 //!    turn runs (same technique as `auto_reply_sender_identity_test`).
@@ -148,7 +150,7 @@ fn inputs(body: &serde_json::Value) -> Vec<u64> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn cron_turn_records_channel_iterations_and_cache_tokens() {
+async fn turn_with_cron_sender_context_records_channel_iterations_and_cache_tokens() {
     let server = MockServer::start().await;
     mount_completion(&server).await;
     let h = boot(&server).await;

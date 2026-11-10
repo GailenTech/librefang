@@ -1575,4 +1575,104 @@ mod dispatch_tests {
 
         kernel.shutdown();
     }
+
+    /// The whole cron path: `dispatch_due_jobs` -> spawned fire -> `send_message_full` with the synthesised cron `SenderContext` -> agent loop -> `usage_events`.
+    /// The provider is a local OpenAI-compatible stub, so a real turn runs and writes its row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatched_cron_turn_writes_usage_row_with_channel_iterations_and_cache() {
+        use crate::kernel_api::KernelApi;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const KEY_ENV: &str = "CRON_TICK_USAGE_ROW_TEST_KEY";
+        std::env::set_var(KEY_ENV, "sk-test-cron-usage-row");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "done" },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 50,
+                    "completion_tokens": 3,
+                    "total_tokens": 53,
+                    "prompt_tokens_details": { "cached_tokens": 20 }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let home_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(home_dir.join("data")).unwrap();
+        let config = KernelConfig {
+            home_dir: home_dir.clone(),
+            data_dir: home_dir.join("data"),
+            default_model: librefang_types::config::DefaultModelConfig {
+                provider: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                api_key_env: KEY_ENV.to_string(),
+                base_url: Some(server.uri()),
+                ..librefang_types::config::DefaultModelConfig::default()
+            },
+            ..KernelConfig::default()
+        };
+        let kernel =
+            Arc::new(LibreFangKernel::boot_with_config(config).expect("Kernel should boot"));
+        kernel.clone().set_self_handle();
+        let agent_id = kernel
+            .spawn_agent_typed(librefang_types::agent::AgentManifest {
+                name: "cron-usage-row".to_string(),
+                source_template: None,
+                ..librefang_types::agent::AgentManifest::default()
+            })
+            .expect("spawn agent");
+
+        let turn = job(
+            agent_id,
+            "usage-row",
+            CronAction::AgentTurn {
+                message: "tick".into(),
+                model_override: None,
+                timeout_secs: None,
+                pre_check_script: None,
+                pre_script: None,
+                silent_marker: None,
+            },
+        );
+        let scheduler = &kernel.workflows.cron_scheduler;
+        let id = scheduler.add_job(turn, false).unwrap();
+        dispatch_due_jobs(&kernel, vec![scheduler.get_job(id).unwrap()]).await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let rows = loop {
+            let rows = kernel
+                .memory_substrate()
+                .usage()
+                .list_agent_events_recent(agent_id, 5)
+                .unwrap();
+            if !rows.is_empty() {
+                break rows;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "cron fire never wrote a usage row (status {:?})",
+                scheduler.get_meta(id).map(|m| m.last_status)
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].channel.as_deref(), Some("cron"));
+        assert_eq!(rows[0].iterations, Some(1));
+        assert_eq!(rows[0].input_tokens, 50);
+        assert_eq!(rows[0].cache_read_input_tokens, Some(20));
+        assert_eq!(rows[0].cache_creation_input_tokens, Some(0));
+        assert!(rows[0].session_id.is_some());
+        kernel.shutdown();
+    }
 }

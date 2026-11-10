@@ -1398,8 +1398,8 @@
         "tags": [
           "agents"
         ],
-        "summary": "GET /api/agents/{id}/events — Recent turn-level events for one agent.",
-        "description": "Backs the dashboard's agent-detail Logs tab. Returns rows sourced\nfrom `usage_events` (newest first) so the panel shows real\noperational data — model dispatch, latency, tokens, cost — instead\nof the audit ledger, which is mostly admin lifecycle entries.\n\nWith `since=<RFC3339>` only rows strictly newer than that instant come\nback, oldest first, capped by `limit`: a poller keeps the last\n`timestamp` it saw as a cursor and loses nothing even when more than\n`limit` rows arrived between polls.",
+        "summary": "GET /api/agents/{id}/events — Turn-level events for one agent.",
+        "description": "Without `since`, rows go from newest to oldest. With `since=<RFC3339>`,\nonly rows strictly newer than that instant come back, from oldest to\nnewest, capped by `limit`: a poller keeps the last `timestamp` it saw as\na cursor and loses nothing even when more than `limit` rows arrived\nbetween polls.\n\nBacks the dashboard's agent-detail Logs tab. Rows come from\n`usage_events`, so the panel shows real operational data (model\ndispatch, latency, tokens, cost, iterations, prompt-cache tokens)\ninstead of the audit ledger, which is mostly admin lifecycle entries.",
         "operationId": "list_agent_events",
         "parameters": [
           {
@@ -17010,7 +17010,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Prompt-cache write tokens; null on rows written before v64.",
+            "description": "Prompt-cache write tokens; null on rows written before these columns existed.",
             "minimum": 0
           },
           "cache_read_input_tokens": {
@@ -17019,7 +17019,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Prompt-cache read tokens; null on rows written before v64.",
+            "description": "Prompt-cache read tokens; null on rows written before these columns existed.",
             "minimum": 0
           },
           "channel": {
@@ -17044,7 +17044,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Agent-loop iterations of the turn; null on rows written before v64.",
+            "description": "Agent-loop iterations of the turn; null on rows written before these columns existed.",
             "minimum": 0
           },
           "latency_ms": {
