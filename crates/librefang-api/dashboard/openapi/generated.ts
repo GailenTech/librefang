@@ -4821,12 +4821,12 @@ export interface components {
         AgentEventRowView: {
             /**
              * Format: int64
-             * @description Prompt-cache write tokens; null on rows written before v64.
+             * @description Prompt-cache write tokens; null on rows written before these columns existed.
              */
             cache_creation_input_tokens?: number | null;
             /**
              * Format: int64
-             * @description Prompt-cache read tokens; null on rows written before v64.
+             * @description Prompt-cache read tokens; null on rows written before these columns existed.
              */
             cache_read_input_tokens?: number | null;
             /** @description Originating channel (`cron`, `telegram`, `api`, ...); null when unattributed. */
@@ -4837,7 +4837,7 @@ export interface components {
             input_tokens: number;
             /**
              * Format: int32
-             * @description Agent-loop iterations of the turn; null on rows written before v64.
+             * @description Agent-loop iterations of the turn; null on rows written before these columns existed.
              */
             iterations?: number | null;
             /** Format: int64 */
